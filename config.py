@@ -13,3 +13,4 @@ MAIN_ADMIN_CHAT_ID = 2002780745
 
 # SQLite baza fayli shu papkada avtomatik yaratiladi
 DB_PATH = "bot.db"
+BOT_USERNAME = "CrimsonStyleBot"
