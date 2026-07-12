@@ -47,6 +47,18 @@ def init_db() -> None:
                 user_chat_id INTEGER NOT NULL,
                 photo_file_id TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
+                product_key TEXT,
+                product_label TEXT,
+                product_price REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS products (
+                key TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                label TEXT NOT NULL,
+                price REAL NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -87,6 +99,15 @@ def init_db() -> None:
                 chat_id INTEGER NOT NULL,
                 used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(promo_id, chat_id)
+            );
+            CREATE TABLE IF NOT EXISTS shipments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tracking_code TEXT UNIQUE NOT NULL,
+                user_chat_id INTEGER NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'accepted',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
         )
@@ -206,11 +227,19 @@ def get_helper_admin_ids() -> list[int]:
 # ---------------------------------------------------------------------
 # To'lovlar (bir nechta adminga yuboriladi, har biriga alohida xabar ID)
 # ---------------------------------------------------------------------
-def insert_payment(user_chat_id: int, photo_file_id: str) -> int:
+def insert_payment(
+    user_chat_id: int,
+    photo_file_id: str,
+    product_key: str | None = None,
+    product_label: str | None = None,
+    product_price: float | None = None,
+) -> int:
     with closing(get_connection()) as conn:
         cur = conn.execute(
-            "INSERT INTO payments (user_chat_id, photo_file_id, status) VALUES (?, ?, 'pending')",
-            (user_chat_id, photo_file_id),
+            """INSERT INTO payments
+               (user_chat_id, photo_file_id, status, product_key, product_label, product_price)
+               VALUES (?, ?, 'pending', ?, ?, ?)""",
+            (user_chat_id, photo_file_id, product_key, product_label, product_price),
         )
         conn.commit()
         return cur.lastrowid
@@ -320,5 +349,88 @@ def upsert_promo_code(code: str, amount: float) -> None:
             """INSERT INTO promo_codes (code, amount, is_active) VALUES (?, ?, 1)
                ON CONFLICT(code) DO UPDATE SET amount = excluded.amount, is_active = 1""",
             (code, amount),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------
+# Mahsulotlar (Telegram Premium / Stars) -- narxlarni admin o'zi boshqaradi
+# ---------------------------------------------------------------------
+def upsert_product(key: str, category: str, label: str, price: float) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute(
+            """INSERT INTO products (key, category, label, price, is_active)
+               VALUES (?, ?, ?, ?, 1)
+               ON CONFLICT(key) DO UPDATE SET
+                   category = excluded.category,
+                   label = excluded.label,
+                   price = excluded.price,
+                   is_active = 1""",
+            (key, category, label, price),
+        )
+        conn.commit()
+
+
+def deactivate_product(key: str) -> bool:
+    with closing(get_connection()) as conn:
+        cur = conn.execute("UPDATE products SET is_active = 0 WHERE key = ?", (key,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_product(key: str) -> sqlite3.Row | None:
+    with closing(get_connection()) as conn:
+        return conn.execute("SELECT * FROM products WHERE key = ?", (key,)).fetchone()
+
+
+def get_active_products(category: str) -> list[sqlite3.Row]:
+    with closing(get_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM products WHERE category = ? AND is_active = 1 ORDER BY price ASC",
+            (category,),
+        ).fetchall()
+
+
+def get_all_products() -> list[sqlite3.Row]:
+    with closing(get_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM products WHERE is_active = 1 ORDER BY category, price ASC"
+        ).fetchall()
+
+
+# ---------------------------------------------------------------------
+# Yuk kuzatish (shipments)
+# ---------------------------------------------------------------------
+def create_shipment(tracking_code: str, user_chat_id: int, description: str) -> int | None:
+    with closing(get_connection()) as conn:
+        try:
+            cur = conn.execute(
+                """INSERT INTO shipments (tracking_code, user_chat_id, description, status)
+                   VALUES (?, ?, ?, 'accepted')""",
+                (tracking_code, user_chat_id, description),
+            )
+            conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None  # bu kod allaqachon band
+
+
+def get_shipment_by_code(tracking_code: str) -> sqlite3.Row | None:
+    with closing(get_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM shipments WHERE tracking_code = ?", (tracking_code,)
+        ).fetchone()
+
+
+def get_shipment(shipment_id: int) -> sqlite3.Row | None:
+    with closing(get_connection()) as conn:
+        return conn.execute("SELECT * FROM shipments WHERE id = ?", (shipment_id,)).fetchone()
+
+
+def update_shipment_status(shipment_id: int, status: str) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute(
+            "UPDATE shipments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, shipment_id),
         )
         conn.commit()
