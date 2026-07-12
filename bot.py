@@ -32,7 +32,7 @@ from telegram.ext import (
 )
 
 import database as db
-from config import BOT_TOKEN, BOT_USERNAME, MAIN_ADMIN_CHAT_ID, REFERRAL_BONUS
+from config import BOT_TOKEN, MAIN_ADMIN_CHAT_ID
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -41,151 +41,17 @@ logger = logging.getLogger(__name__)
 
 
 # =======================================================================
-# Ko'p til qo'llab-quvvatlash (o'zbek / rus / ingliz)
-# Faqat asosiy foydalanuvchi oqimi tarjima qilingan; admin panel doim
-# o'zbek tilida qoladi (chunki adminlar o'zgarmaydi).
-# =======================================================================
-TEXTS = {
-    "choose_language": {
-        "uz": "Tilni tanlang / Выберите язык / Choose language:",
-        "ru": "Tilni tanlang / Выберите язык / Choose language:",
-        "en": "Tilni tanlang / Выберите язык / Choose language:",
-    },
-    "welcome_new": {
-        "uz": "Assalomu alaykum! Botimizga xush kelibsiz. 🙌\n\nRo'yxatdan o'tish uchun avval to'liq ismingizni yozib yuboring:",
-        "ru": "Здравствуйте! Добро пожаловать в наш бот. 🙌\n\nДля регистрации напишите, пожалуйста, ваше полное имя:",
-        "en": "Hello! Welcome to our bot. 🙌\n\nTo register, please send your full name:",
-    },
-    "ask_name_invalid": {
-        "uz": "Iltimos, to'g'ri ism kiriting (kamida 2 ta harf):",
-        "ru": "Пожалуйста, введите корректное имя (минимум 2 буквы):",
-        "en": "Please enter a valid name (at least 2 letters):",
-    },
-    "ask_phone": {
-        "uz": "Rahmat, {name}! Endi telefon raqamingizni pastdagi tugma orqali yuboring:",
-        "ru": "Спасибо, {name}! Теперь отправьте свой номер телефона через кнопку ниже:",
-        "en": "Thanks, {name}! Now send your phone number using the button below:",
-    },
-    "phone_button": {
-        "uz": "📱 Raqamni yuborish",
-        "ru": "📱 Отправить номер",
-        "en": "📱 Send phone number",
-    },
-    "registered_welcome": {
-        "uz": "🎉 Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\nQuyidagi bo'limlardan birini tanlang:",
-        "ru": "🎉 Вы успешно зарегистрированы!\n\nВыберите один из разделов ниже:",
-        "en": "🎉 You have registered successfully!\n\nChoose one of the sections below:",
-    },
-    "welcome_back": {
-        "uz": "Xush kelibsiz, {name}! 👋\n\nQuyidagi bo'limlardan birini tanlang:",
-        "ru": "Добро пожаловать, {name}! 👋\n\nВыберите один из разделов ниже:",
-        "en": "Welcome back, {name}! 👋\n\nChoose one of the sections below:",
-    },
-    "main_menu_prompt": {
-        "uz": "Quyidagi bo'limlardan birini tanlang 👇",
-        "ru": "Выберите один из разделов ниже 👇",
-        "en": "Choose one of the sections below 👇",
-    },
-    "btn_payment": {"uz": "💰 To'lov", "ru": "💰 Оплата", "en": "💰 Payment"},
-    "btn_wallet": {"uz": "💼 Hamyon", "ru": "💼 Кошелёк", "en": "💼 Wallet"},
-    "btn_support": {"uz": "🎧 Support", "ru": "🎧 Поддержка", "en": "🎧 Support"},
-    "btn_promo": {"uz": "🎟 Promo kod", "ru": "🎟 Промокод", "en": "🎟 Promo code"},
-    "btn_premium": {"uz": "⭐ Premium & Stars", "ru": "⭐ Premium и Stars", "en": "⭐ Premium & Stars"},
-    "btn_cargo": {"uz": "📦 Yuk kuzatish", "ru": "📦 Отследить груз", "en": "📦 Track cargo"},
-    "btn_referral": {"uz": "🎁 Referal", "ru": "🎁 Реферал", "en": "🎁 Referral"},
-    "btn_orders": {"uz": "📜 Buyurtmalarim", "ru": "📜 Мои заказы", "en": "📜 My orders"},
-    "btn_language": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
-    "wallet_text": {
-        "uz": "💼 Hamyoningiz\n\nJoriy balans: {balance} so'm\n\nBalansni to'ldirish uchun \"🎟 Promo kod\" yoki \"🎁 Referal\" bo'limidan foydalaning.",
-        "ru": "💼 Ваш кошелёк\n\nТекущий баланс: {balance} сум\n\nЧтобы пополнить баланс, используйте раздел «🎟 Промокод» или «🎁 Реферал».",
-        "en": "💼 Your wallet\n\nCurrent balance: {balance} UZS\n\nTo top up, use \"🎟 Promo code\" or \"🎁 Referral\".",
-    },
-    "promo_prompt": {
-        "uz": "Promo kodni kiriting: 🎟",
-        "ru": "Введите промокод: 🎟",
-        "en": "Enter the promo code: 🎟",
-    },
-    "promo_invalid": {
-        "uz": "❌ Bunday promo kod topilmadi yoki u faol emas.",
-        "ru": "❌ Такой промокод не найден или он неактивен.",
-        "en": "❌ This promo code was not found or is inactive.",
-    },
-    "promo_used": {
-        "uz": "⚠️ Siz bu promo koddan avval foydalangansiz.",
-        "ru": "⚠️ Вы уже использовали этот промокод.",
-        "en": "⚠️ You have already used this promo code.",
-    },
-    "promo_success": {
-        "uz": "✅ Promo kod muvaffaqiyatli qo'llanildi!\n💰 Balansingizga {amount} so'm qo'shildi.\n\nJoriy balans: {balance} so'm",
-        "ru": "✅ Промокод успешно применён!\n💰 На ваш баланс зачислено {amount} сум.\n\nТекущий баланс: {balance} сум",
-        "en": "✅ Promo code applied successfully!\n💰 {amount} UZS added to your balance.\n\nCurrent balance: {balance} UZS",
-    },
-    "cancel_text": {
-        "uz": "❌ Amal bekor qilindi.",
-        "ru": "❌ Действие отменено.",
-        "en": "❌ Action cancelled.",
-    },
-    "referral_text": {
-        "uz": "🎁 Do'stlaringizni taklif qiling!\n\nHar bir taklif qilingan do'stingiz ro'yxatdan o'tsa, hamyoningizga {bonus} so'm qo'shiladi.\n\n🔗 Sizning havolangiz:\n{link}\n\n👥 Taklif qilingan do'stlar: {count}",
-        "ru": "🎁 Приглашайте друзей!\n\nЗа каждого друга, который зарегистрируется по вашей ссылке, на ваш кошелёк начислится {bonus} сум.\n\n🔗 Ваша ссылка:\n{link}\n\n👥 Приглашено друзей: {count}",
-        "en": "🎁 Invite your friends!\n\nFor every friend who registers using your link, {bonus} UZS will be added to your wallet.\n\n🔗 Your link:\n{link}\n\n👥 Friends invited: {count}",
-    },
-    "referral_bonus_notice": {
-        "uz": "🎉 Sizning havolangiz orqali yangi do'stingiz ro'yxatdan o'tdi!\n💰 Hamyoningizga {bonus} so'm qo'shildi.",
-        "ru": "🎉 По вашей ссылке зарегистрировался новый друг!\n💰 На ваш кошелёк начислено {bonus} сум.",
-        "en": "🎉 A new friend registered using your link!\n💰 {bonus} UZS added to your wallet.",
-    },
-    "orders_header": {
-        "uz": "📜 Sizning buyurtmalaringiz:",
-        "ru": "📜 Ваши заказы:",
-        "en": "📜 Your orders:",
-    },
-    "orders_empty": {
-        "uz": "Sizda hali birorta ham buyurtma yo'q.",
-        "ru": "У вас пока нет заказов.",
-        "en": "You don't have any orders yet.",
-    },
-    "language_changed": {
-        "uz": "✅ Til o'zbekchaga o'zgartirildi.",
-        "ru": "✅ Язык изменён на русский.",
-        "en": "✅ Language changed to English.",
-    },
-}
-
-
-def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in ("uz", "ru", "en") else "uz"
-    template = TEXTS.get(key, {}).get(lang) or TEXTS.get(key, {}).get("uz", key)
-    return template.format(**kwargs) if kwargs else template
-
-
-# =======================================================================
 # Umumiy klaviaturalar
 # =======================================================================
-def main_menu_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
+def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(t(lang, "btn_payment"), callback_data="menu_payment")],
-            [InlineKeyboardButton(t(lang, "btn_wallet"), callback_data="menu_wallet")],
-            [InlineKeyboardButton(t(lang, "btn_support"), callback_data="menu_support")],
-            [InlineKeyboardButton(t(lang, "btn_promo"), callback_data="menu_promo")],
-            [InlineKeyboardButton(t(lang, "btn_premium"), callback_data="menu_premium")],
-            [InlineKeyboardButton(t(lang, "btn_cargo"), callback_data="menu_cargo")],
-            [InlineKeyboardButton(t(lang, "btn_referral"), callback_data="menu_referral")],
-            [InlineKeyboardButton(t(lang, "btn_orders"), callback_data="menu_orders")],
-            [InlineKeyboardButton(t(lang, "btn_language"), callback_data="menu_language")],
-        ]
-    )
-
-
-def language_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="lang_uz"),
-                InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-                InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
-            ]
+            [InlineKeyboardButton("💰 To'lov", callback_data="menu_payment")],
+            [InlineKeyboardButton("💼 Hamyon", callback_data="menu_wallet")],
+            [InlineKeyboardButton("🎧 Support", callback_data="menu_support")],
+            [InlineKeyboardButton("🎟 Promo kod", callback_data="menu_promo")],
+            [InlineKeyboardButton("⭐ Premium & Stars", callback_data="menu_premium")],
+            [InlineKeyboardButton("📦 Yuk kuzatish", callback_data="menu_cargo")],
         ]
     )
 
@@ -245,9 +111,9 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def contact_request_keyboard(label: str = "📱 Raqamni yuborish") -> ReplyKeyboardMarkup:
+def contact_request_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(label, request_contact=True)]],
+        [[KeyboardButton("📱 Raqamni yuborish", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -298,32 +164,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     user = db.create_user_if_not_exists(chat_id, username)
-    lang = db.get_language(chat_id)
 
     if user["is_registered"] == 1:
         await update.message.reply_text(
-            t(lang, "welcome_back", name=user["full_name"]),
-            reply_markup=main_menu_keyboard(lang),
+            f"Xush kelibsiz, {user['full_name']}! 👋\n\nQuyidagi bo'limlardan birini tanlang:",
+            reply_markup=main_menu_keyboard(),
         )
         return
 
-    # Referal havolasi orqali kelganmi? (masalan /start ref123456)
-    if context.args and context.args[0].startswith("ref") and user["referred_by"] is None:
-        try:
-            referrer_id = int(context.args[0][3:])
-            db.set_referrer(chat_id, referrer_id)
-        except ValueError:
-            pass
-
-    # Yangi foydalanuvchi -- avval tilni tanlaydi
-    await update.message.reply_text(t(lang, "choose_language"), reply_markup=language_keyboard())
-
-
-async def handle_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str) -> None:
-    db.set_language(chat_id, lang)
     db.set_state(chat_id, "waiting_name")
-    await context.bot.send_message(
-        chat_id=chat_id, text=t(lang, "welcome_new"), reply_markup=ReplyKeyboardRemove()
+    await update.message.reply_text(
+        "Assalomu alaykum! Botimizga xush kelibsiz. 🙌\n\n"
+        "Ro'yxatdan o'tish uchun avval to'liq ismingizni yozib yuboring:",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
 
@@ -790,7 +643,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 5) Hech qanday state yo'q -- asosiy menyu
     # ---------------------------------------------------------
     await message.reply_text(
-        t(db.get_language(chat_id), "main_menu_prompt"), reply_markup=main_menu_keyboard(db.get_language(chat_id))
+        "Quyidagi bo'limlardan birini tanlang 👇", reply_markup=main_menu_keyboard()
     )
 
 
@@ -798,40 +651,37 @@ async def handle_waiting_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = update.effective_message
     chat_id = update.effective_chat.id
     text = (message.text or "").strip()
-    lang = db.get_language(chat_id)
 
     if len(text) < 2:
-        await message.reply_text(t(lang, "ask_name_invalid"))
+        await message.reply_text("Iltimos, to'g'ri ism kiriting (kamida 2 ta harf):")
         return
 
     db.save_name(chat_id, text)
     await message.reply_text(
-        t(lang, "ask_phone", name=text),
-        reply_markup=contact_request_keyboard(t(lang, "phone_button")),
+        f"Rahmat, {text}! Endi telefon raqamingizni pastdagi tugma orqali yuboring:",
+        reply_markup=contact_request_keyboard(),
     )
 
 
 async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat_id = update.effective_chat.id
-    lang = db.get_language(chat_id)
     contact = message.contact
 
     if contact is None:
         await message.reply_text(
             'Iltimos, telefon raqamingizni faqat pastdagi "📱 Raqamni yuborish" tugmasi orqali yuboring.',
-            reply_markup=contact_request_keyboard(t(lang, "phone_button")),
+            reply_markup=contact_request_keyboard(),
         )
         return
 
     if contact.user_id != chat_id:
         await message.reply_text(
             "Iltimos, faqat o'zingizning raqamingizni yuboring.",
-            reply_markup=contact_request_keyboard(t(lang, "phone_button")),
+            reply_markup=contact_request_keyboard(),
         )
         return
 
-    user_before = db.get_user(chat_id)
     db.save_phone_and_finish_registration(chat_id, contact.phone_number)
 
     # Avvalgi "Raqamni yuborish" pastki tugmasini majburan olib tashlaymiz
@@ -839,24 +689,9 @@ async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.reply_text("Rahmat! ✅", reply_markup=ReplyKeyboardRemove())
 
     await message.reply_text(
-        t(lang, "registered_welcome"),
-        reply_markup=main_menu_keyboard(lang),
+        "🎉 Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\nQuyidagi bo'limlardan birini tanlang:",
+        reply_markup=main_menu_keyboard(),
     )
-
-    # Agar referal havolasi orqali kelgan bo'lsa, taklif qilgan odamga bonus beramiz
-    referrer_id = user_before["referred_by"] if user_before else None
-    if referrer_id:
-        db.add_balance(referrer_id, REFERRAL_BONUS)
-        referrer_lang = db.get_language(referrer_id)
-        try:
-            await context.bot.send_message(
-                chat_id=referrer_id,
-                text=t(referrer_lang, "referral_bonus_notice", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " ")),
-            )
-        except Exception as e:
-            logger.warning("Referal bonusi haqida (%s) xabar yuborilmadi: %s", referrer_id, e)
-
-
 
 
 async def handle_payment_photo(
@@ -1137,70 +972,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if data == "menu_wallet":
-        lang = db.get_language(chat_id)
         await query.answer()
         balance = db.get_balance(chat_id)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=t(lang, "wallet_text", balance=f"{balance:,.0f}".replace(",", " ")),
+            text=(
+                f"💼 Hamyoningiz\n\n"
+                f"Joriy balans: {balance:,.0f} so'm\n\n"
+                "Balansni to'ldirish uchun \"🎟 Promo kod\" bo'limidan foydalaning."
+            ).replace(",", " "),
         )
-        return
-
-    if data.startswith("lang_"):
-        lang = data.replace("lang_", "")
-        user = db.get_user(chat_id)
-        await query.answer()
-
-        if user is not None and user["is_registered"] == 1:
-            # Ro'yxatdan o'tgan foydalanuvchi tilni o'zgartiryapti
-            db.set_language(chat_id, lang)
-            await context.bot.send_message(chat_id=chat_id, text=t(lang, "language_changed"))
-            await context.bot.send_message(
-                chat_id=chat_id, text=t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang)
-            )
-        else:
-            # Ro'yxatdan o'tish jarayonida birinchi marta til tanlanyapti
-            await handle_language_selected(update, context, chat_id, lang)
-        return
-
-    if data == "menu_language":
-        await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text=t(db.get_language(chat_id), "choose_language"), reply_markup=language_keyboard())
-        return
-
-    if data == "menu_referral":
-        lang = db.get_language(chat_id)
-        await query.answer()
-        link = f"https://t.me/{BOT_USERNAME}?start=ref{chat_id}"
-        count = db.get_referral_count(chat_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=t(lang, "referral_text", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " "), link=link, count=count),
-        )
-        return
-
-    if data == "menu_orders":
-        lang = db.get_language(chat_id)
-        await query.answer()
-        payments = db.get_user_payments(chat_id)
-        shipments = db.get_user_shipments(chat_id)
-
-        if not payments and not shipments:
-            await context.bot.send_message(chat_id=chat_id, text=t(lang, "orders_empty"))
-            return
-
-        lines = [t(lang, "orders_header"), ""]
-        status_icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
-        for p in payments:
-            product = f" — {p['product_label']}" if p["product_label"] else ""
-            lines.append(f"{status_icons.get(p['status'], '•')} #{p['id']}{product} ({p['status']})")
-
-        if shipments:
-            lines.append("")
-            for s in shipments:
-                lines.append(f"📦 {s['tracking_code']} — {CARGO_STATUSES.get(s['status'], s['status'])}")
-
-        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
         return
 
     if data == "menu_cargo":
@@ -1254,10 +1035,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if data == "menu_back":
-        lang = db.get_language(chat_id)
         await query.answer()
         await context.bot.send_message(
-            chat_id=chat_id, text=t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang)
+            chat_id=chat_id, text="Quyidagi bo'limlardan birini tanlang 👇", reply_markup=main_menu_keyboard()
         )
         return
 
@@ -1297,12 +1077,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer(text="Bu mahsulot endi mavjud emas.", show_alert=True)
             return
 
-        if db.has_pending_payment(chat_id):
-            await query.answer(
-                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
-            )
-            return
-
         db.set_state(chat_id, f"waiting_payment_photo:{product_key}")
         await query.answer()
         await context.bot.send_message(
@@ -1316,11 +1090,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if data == "menu_payment":
-        if db.has_pending_payment(chat_id):
-            await query.answer(
-                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
-            )
-            return
         db.set_state(chat_id, "waiting_payment_photo")
         await query.answer()
         await context.bot.send_message(
@@ -1337,7 +1106,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "menu_promo":
         db.set_state(chat_id, "waiting_promo_code")
         await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text=t(db.get_language(chat_id), "promo_prompt"))
+        await context.bot.send_message(chat_id=chat_id, text="Promo kodni kiriting: 🎟")
 
     else:
         await query.answer(text="Noma'lum amal.")
