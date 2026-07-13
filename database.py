@@ -35,6 +35,7 @@ def init_db() -> None:
                 is_registered INTEGER NOT NULL DEFAULT 0,
                 language TEXT NOT NULL DEFAULT 'uz',
                 referred_by INTEGER,
+                address TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -135,6 +136,7 @@ def init_db() -> None:
         for ddl in (
             "ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'uz'",
             "ALTER TABLE users ADD COLUMN referred_by INTEGER",
+            "ALTER TABLE users ADD COLUMN address TEXT",
         ):
             try:
                 conn.execute(ddl)
@@ -215,6 +217,12 @@ def get_all_registered_chat_ids() -> list[int]:
 def set_language(chat_id: int, language: str) -> None:
     with closing(get_connection()) as conn:
         conn.execute("UPDATE users SET language = ? WHERE chat_id = ?", (language, chat_id))
+        conn.commit()
+
+
+def save_address(chat_id: int, address: str) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute("UPDATE users SET address = ? WHERE chat_id = ?", (address, chat_id))
         conn.commit()
 
 
