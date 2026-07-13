@@ -90,11 +90,35 @@ TEXTS = {
     "btn_wallet": {"uz": "💼 Hamyon", "ru": "💼 Кошелёк", "en": "💼 Wallet"},
     "btn_support": {"uz": "🎧 Support", "ru": "🎧 Поддержка", "en": "🎧 Support"},
     "btn_promo": {"uz": "🎟 Promo kod", "ru": "🎟 Промокод", "en": "🎟 Promo code"},
+    "btn_transfer": {"uz": "💸 Pul o'tkazish", "ru": "💸 Перевести деньги", "en": "💸 Transfer money"},
     "btn_premium": {"uz": "⭐ Premium & Stars", "ru": "⭐ Premium и Stars", "en": "⭐ Premium & Stars"},
     "btn_cargo": {"uz": "📦 Yuk kuzatish", "ru": "📦 Отследить груз", "en": "📦 Track cargo"},
     "btn_referral": {"uz": "🎁 Referal", "ru": "🎁 Реферал", "en": "🎁 Referral"},
     "btn_orders": {"uz": "📜 Buyurtmalarim", "ru": "📜 Мои заказы", "en": "📜 My orders"},
     "btn_language": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
+    "btn_profile": {"uz": "👤 Profil", "ru": "👤 Профиль", "en": "👤 Profile"},
+    "profile_text": {
+        "uz": "👤 Sizning profilingiz\n\n📝 Ism: {name}\n📞 Telefon: {phone}\n🔖 Username: {username}\n📍 Manzil: {address}\n💼 Balans: {balance} so'm",
+        "ru": "👤 Ваш профиль\n\n📝 Имя: {name}\n📞 Телефон: {phone}\n🔖 Имя пользователя: {username}\n📍 Адрес: {address}\n💼 Баланс: {balance} сум",
+        "en": "👤 Your profile\n\n📝 Name: {name}\n📞 Phone: {phone}\n🔖 Username: {username}\n📍 Address: {address}\n💼 Balance: {balance} UZS",
+    },
+    "address_not_set": {"uz": "kiritilmagan", "ru": "не указан", "en": "not set"},
+    "ask_address": {
+        "uz": "📍 Manzilingizni yozib yuboring (shahar, tuman, ko'cha, uy):",
+        "ru": "📍 Напишите ваш адрес (город, район, улица, дом):",
+        "en": "📍 Please send your address (city, district, street, house):",
+    },
+    "address_saved": {
+        "uz": "✅ Manzil saqlandi!",
+        "ru": "✅ Адрес сохранён!",
+        "en": "✅ Address saved!",
+    },
+    "btn_edit_address": {
+        "uz": "✏️ Manzilni o'zgartirish",
+        "ru": "✏️ Изменить адрес",
+        "en": "✏️ Edit address",
+    },
+    "btn_back": {"uz": "« Orqaga", "ru": "« Назад", "en": "« Back"},
     "wallet_text": {
         "uz": "💼 Hamyoningiz\n\nJoriy balans: {balance} so'm\n\nBalansni to'ldirish uchun \"🎟 Promo kod\" yoki \"🎁 Referal\" bo'limidan foydalaning.",
         "ru": "💼 Ваш кошелёк\n\nТекущий баланс: {balance} сум\n\nЧтобы пополнить баланс, используйте раздел «🎟 Промокод» или «🎁 Реферал».",
@@ -167,11 +191,7 @@ def main_menu_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(t(lang, "btn_payment"), callback_data="menu_payment"),
-                InlineKeyboardButton(t(lang, "btn_wallet"), callback_data="menu_wallet"),
-            ],
-            [
                 InlineKeyboardButton(t(lang, "btn_support"), callback_data="menu_support"),
-                InlineKeyboardButton(t(lang, "btn_promo"), callback_data="menu_promo"),
             ],
             [
                 InlineKeyboardButton(t(lang, "btn_premium"), callback_data="menu_premium"),
@@ -181,7 +201,10 @@ def main_menu_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
                 InlineKeyboardButton(t(lang, "btn_referral"), callback_data="menu_referral"),
                 InlineKeyboardButton(t(lang, "btn_orders"), callback_data="menu_orders"),
             ],
-            [InlineKeyboardButton(t(lang, "btn_language"), callback_data="menu_language")],
+            [
+                InlineKeyboardButton(t(lang, "btn_profile"), callback_data="menu_profile"),
+                InlineKeyboardButton(t(lang, "btn_language"), callback_data="menu_language"),
+            ],
         ]
     )
 
@@ -262,6 +285,17 @@ def admin_product_category_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("💎 Telegram Premium", callback_data="admin_addproduct_cat_premium")],
             [InlineKeyboardButton("⭐ Telegram Stars", callback_data="admin_addproduct_cat_stars")],
+        ]
+    )
+
+
+def profile_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(lang, "btn_edit_address"), callback_data="edit_address")],
+            [InlineKeyboardButton(t(lang, "btn_transfer"), callback_data="wallet_transfer")],
+            [InlineKeyboardButton(t(lang, "btn_promo"), callback_data="menu_promo")],
+            [InlineKeyboardButton(t(lang, "btn_back"), callback_data="menu_back")],
         ]
     )
 
@@ -891,6 +925,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # ---------------------------------------------------------
+    # 7) Profil -- manzilni tahrirlash
+    # ---------------------------------------------------------
+    if state == "waiting_address":
+        await handle_address_input(update, context)
+        return
+
+    # ---------------------------------------------------------
     # 5) Hech qanday state yo'q -- asosiy menyu
     # ---------------------------------------------------------
     await message.reply_text(
@@ -986,11 +1027,13 @@ async def handle_payment_photo(
 
     user = db.get_user(chat_id)
     product_line = f"🛒 Mahsulot: {product['label']} ({product['price']:,.0f} so'm)\n".replace(",", " ") if product else ""
+    address_line = f"📍 Manzil: {user['address']}\n" if user["address"] else ""
     caption = (
         "🧾 Yangi to'lov cheki!\n\n"
         f"{product_line}"
         f"👤 Ism: {user['full_name']}\n"
         f"📞 Tel: {user['phone_number']}\n"
+        f"{address_line}"
         f"🆔 Chat ID: {chat_id}\n"
         f"#to'lov_{payment_id}"
     )
@@ -1166,6 +1209,41 @@ async def handle_transfer_amount(update: Update, context: ContextTypes.DEFAULT_T
         )
     except Exception as e:
         logger.warning("Qabul qiluvchiga (%s) o'tkazma haqida xabar yuborilmadi: %s", recipient_id, e)
+
+
+async def handle_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    lang = db.get_language(chat_id)
+    address = (message.text or "").strip()
+
+    if len(address) < 5:
+        await message.reply_text(
+            "Iltimos, to'liqroq manzil kiriting (kamida shahar va ko'cha nomi):"
+            if lang == "uz"
+            else t(lang, "ask_address")
+        )
+        return
+
+    db.save_address(chat_id, address)
+    db.set_state(chat_id, None)
+
+    await message.reply_text(t(lang, "address_saved"))
+
+    user = db.get_user(chat_id)
+    await message.reply_text(
+        t(
+            lang,
+            "profile_text",
+            name=user["full_name"] or "-",
+            phone=user["phone_number"] or "-",
+            username=f"@{user['username']}" if user["username"] else "-",
+            address=user["address"] or t(lang, "address_not_set"),
+            balance=f"{user['balance']:,.0f}".replace(",", " "),
+        ),
+        reply_markup=profile_keyboard(lang),
+    )
+
 
 
 
@@ -1436,14 +1514,49 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if data == "menu_wallet":
+    if data == "menu_profile":
         lang = db.get_language(chat_id)
         await query.answer()
-        balance = db.get_balance(chat_id)
+        user = db.get_user(chat_id)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=t(lang, "wallet_text", balance=f"{balance:,.0f}".replace(",", " ")),
-            reply_markup=wallet_keyboard(lang),
+            text=t(
+                lang,
+                "profile_text",
+                name=user["full_name"] or "-",
+                phone=user["phone_number"] or "-",
+                username=f"@{user['username']}" if user["username"] else "-",
+                address=user["address"] or t(lang, "address_not_set"),
+                balance=f"{user['balance']:,.0f}".replace(",", " "),
+            ),
+            reply_markup=profile_keyboard(lang),
+        )
+        return
+
+    if data == "edit_address":
+        lang = db.get_language(chat_id)
+        db.set_state(chat_id, "waiting_address")
+        await query.answer()
+        await context.bot.send_message(chat_id=chat_id, text=t(lang, "ask_address"))
+        return
+
+    if data == "menu_wallet":
+        # Eski tugma -- endi hamyon Profil ichida, shunga yo'naltiramiz
+        lang = db.get_language(chat_id)
+        await query.answer()
+        user = db.get_user(chat_id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=t(
+                lang,
+                "profile_text",
+                name=user["full_name"] or "-",
+                phone=user["phone_number"] or "-",
+                username=f"@{user['username']}" if user["username"] else "-",
+                address=user["address"] or t(lang, "address_not_set"),
+                balance=f"{user['balance']:,.0f}".replace(",", " "),
+            ),
+            reply_markup=profile_keyboard(lang),
         )
         return
 
