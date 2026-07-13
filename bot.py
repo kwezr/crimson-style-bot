@@ -12,6 +12,7 @@ sifatida ishga tushiring (masalan systemd, screen yoki tmux orqali).
 -----------------------------------------------------------------
 """
 
+import html
 import logging
 
 from telegram import (
@@ -72,19 +73,19 @@ TEXTS = {
         "en": "📱 Send phone number",
     },
     "registered_welcome": {
-        "uz": "🎉 Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\nQuyidagi bo'limlardan birini tanlang:",
-        "ru": "🎉 Вы успешно зарегистрированы!\n\nВыберите один из разделов ниже:",
-        "en": "🎉 You have registered successfully!\n\nChoose one of the sections below:",
+        "uz": "🎉 <b>Ro'yxatdan muvaffaqiyatli o'tdingiz!</b>\n➖➖➖➖➖➖➖➖➖➖\nQuyidagi bo'limlardan birini tanlang:",
+        "ru": "🎉 <b>Вы успешно зарегистрированы!</b>\n➖➖➖➖➖➖➖➖➖➖\nВыберите один из разделов ниже:",
+        "en": "🎉 <b>You have registered successfully!</b>\n➖➖➖➖➖➖➖➖➖➖\nChoose one of the sections below:",
     },
     "welcome_back": {
-        "uz": "Xush kelibsiz, {name}! 👋\n\nQuyidagi bo'limlardan birini tanlang:",
-        "ru": "Добро пожаловать, {name}! 👋\n\nВыберите один из разделов ниже:",
-        "en": "Welcome back, {name}! 👋\n\nChoose one of the sections below:",
+        "uz": "👋 Xush kelibsiz, <b>{name}</b>!\n➖➖➖➖➖➖➖➖➖➖\nQuyidagi bo'limlardan birini tanlang:",
+        "ru": "👋 Добро пожаловать, <b>{name}</b>!\n➖➖➖➖➖➖➖➖➖➖\nВыберите один из разделов ниже:",
+        "en": "👋 Welcome back, <b>{name}</b>!\n➖➖➖➖➖➖➖➖➖➖\nChoose one of the sections below:",
     },
     "main_menu_prompt": {
-        "uz": "Quyidagi bo'limlardan birini tanlang 👇",
-        "ru": "Выберите один из разделов ниже 👇",
-        "en": "Choose one of the sections below 👇",
+        "uz": "✨ <b>Asosiy menyu</b>\n➖➖➖➖➖➖➖➖➖➖\nQuyidagi bo'limlardan birini tanlang 👇",
+        "ru": "✨ <b>Главное меню</b>\n➖➖➖➖➖➖➖➖➖➖\nВыберите один из разделов ниже 👇",
+        "en": "✨ <b>Main menu</b>\n➖➖➖➖➖➖➖➖➖➖\nChoose one of the sections below 👇",
     },
     "btn_payment": {"uz": "💰 To'lov", "ru": "💰 Оплата", "en": "💰 Payment"},
     "btn_wallet": {"uz": "💼 Hamyon", "ru": "💼 Кошелёк", "en": "💼 Wallet"},
@@ -98,9 +99,9 @@ TEXTS = {
     "btn_language": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
     "btn_profile": {"uz": "👤 Profil", "ru": "👤 Профиль", "en": "👤 Profile"},
     "profile_text": {
-        "uz": "👤 Sizning profilingiz\n\n📝 Ism: {name}\n📞 Telefon: {phone}\n🔖 Username: {username}\n📍 Manzil: {address}\n💼 Balans: {balance} so'm",
-        "ru": "👤 Ваш профиль\n\n📝 Имя: {name}\n📞 Телефон: {phone}\n🔖 Имя пользователя: {username}\n📍 Адрес: {address}\n💼 Баланс: {balance} сум",
-        "en": "👤 Your profile\n\n📝 Name: {name}\n📞 Phone: {phone}\n🔖 Username: {username}\n📍 Address: {address}\n💼 Balance: {balance} UZS",
+        "uz": "👤 <b>Sizning profilingiz</b>\n➖➖➖➖➖➖➖➖➖➖\n📝 <b>Ism:</b> {name}\n📞 <b>Telefon:</b> {phone}\n🔖 <b>Username:</b> {username}\n📍 <b>Manzil:</b> {address}\n💼 <b>Balans:</b> {balance} so'm\n🆔 <b>Wallet ID:</b> <code>{wallet_id}</code>\n🏷 <b>Chegirma:</b> {discount}%",
+        "ru": "👤 <b>Ваш профиль</b>\n➖➖➖➖➖➖➖➖➖➖\n📝 <b>Имя:</b> {name}\n📞 <b>Телефон:</b> {phone}\n🔖 <b>Имя пользователя:</b> {username}\n📍 <b>Адрес:</b> {address}\n💼 <b>Баланс:</b> {balance} сум\n🆔 <b>Wallet ID:</b> <code>{wallet_id}</code>\n🏷 <b>Скидка:</b> {discount}%",
+        "en": "👤 <b>Your profile</b>\n➖➖➖➖➖➖➖➖➖➖\n📝 <b>Name:</b> {name}\n📞 <b>Phone:</b> {phone}\n🔖 <b>Username:</b> {username}\n📍 <b>Address:</b> {address}\n💼 <b>Balance:</b> {balance} UZS\n🆔 <b>Wallet ID:</b> <code>{wallet_id}</code>\n🏷 <b>Discount:</b> {discount}%",
     },
     "address_not_set": {"uz": "kiritilmagan", "ru": "не указан", "en": "not set"},
     "ask_address": {
@@ -150,9 +151,9 @@ TEXTS = {
         "en": "❌ Action cancelled.",
     },
     "referral_text": {
-        "uz": "🎁 Do'stlaringizni taklif qiling!\n\nHar bir taklif qilingan do'stingiz ro'yxatdan o'tsa, hamyoningizga {bonus} so'm qo'shiladi.\n\n🔗 Sizning havolangiz:\n{link}\n\n👥 Taklif qilingan do'stlar: {count}",
-        "ru": "🎁 Приглашайте друзей!\n\nЗа каждого друга, который зарегистрируется по вашей ссылке, на ваш кошелёк начислится {bonus} сум.\n\n🔗 Ваша ссылка:\n{link}\n\n👥 Приглашено друзей: {count}",
-        "en": "🎁 Invite your friends!\n\nFor every friend who registers using your link, {bonus} UZS will be added to your wallet.\n\n🔗 Your link:\n{link}\n\n👥 Friends invited: {count}",
+        "uz": "🎁 <b>Do'stlaringizni taklif qiling!</b>\n➖➖➖➖➖➖➖➖➖➖\nHar bir taklif qilingan do'stingiz ro'yxatdan o'tsa, hamyoningizga <b>{bonus} so'm</b> qo'shiladi.\n\n🔗 <b>Sizning havolangiz:</b>\n{link}\n\n👥 <b>Taklif qilingan do'stlar:</b> {count}",
+        "ru": "🎁 <b>Приглашайте друзей!</b>\n➖➖➖➖➖➖➖➖➖➖\nЗа каждого друга, который зарегистрируется по вашей ссылке, на ваш кошелёк начислится <b>{bonus} сум</b>.\n\n🔗 <b>Ваша ссылка:</b>\n{link}\n\n👥 <b>Приглашено друзей:</b> {count}",
+        "en": "🎁 <b>Invite your friends!</b>\n➖➖➖➖➖➖➖➖➖➖\nFor every friend who registers using your link, <b>{bonus} UZS</b> will be added to your wallet.\n\n🔗 <b>Your link:</b>\n{link}\n\n👥 <b>Friends invited:</b> {count}",
     },
     "referral_bonus_notice": {
         "uz": "🎉 Sizning havolangiz orqali yangi do'stingiz ro'yxatdan o'tdi!\n💰 Hamyoningizga {bonus} so'm qo'shildi.",
@@ -160,9 +161,9 @@ TEXTS = {
         "en": "🎉 A new friend registered using your link!\n💰 {bonus} UZS added to your wallet.",
     },
     "orders_header": {
-        "uz": "📜 Sizning buyurtmalaringiz:",
-        "ru": "📜 Ваши заказы:",
-        "en": "📜 Your orders:",
+        "uz": "📜 <b>Sizning buyurtmalaringiz</b>\n➖➖➖➖➖➖➖➖➖➖",
+        "ru": "📜 <b>Ваши заказы</b>\n➖➖➖➖➖➖➖➖➖➖",
+        "en": "📜 <b>Your orders</b>\n➖➖➖➖➖➖➖➖➖➖",
     },
     "orders_empty": {
         "uz": "Sizda hali birorta ham buyurtma yo'q.",
@@ -275,6 +276,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("📢 Barchaga xabar yuborish", callback_data="admin_broadcast")],
             [InlineKeyboardButton("➕ Mahsulot qo'shish (Premium/Stars)", callback_data="admin_addproduct")],
+            [InlineKeyboardButton("📦 Yuk qo'shish", callback_data="admin_addshipment")],
             [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
         ]
     )
@@ -325,6 +327,39 @@ def slugify(text: str) -> str:
     return slug or "item"
 
 
+def build_profile_text(lang: str, user) -> str:
+    """profile_text shablonini xavfsiz (HTML belgilarini escape qilib) tayyorlaydi."""
+    wallet_id = user["wallet_id"] or db.ensure_wallet_id(user["chat_id"])
+    return t(
+        lang,
+        "profile_text",
+        name=html.escape(user["full_name"] or "-"),
+        phone=html.escape(user["phone_number"] or "-"),
+        username=html.escape(f"@{user['username']}") if user["username"] else "-",
+        address=html.escape(user["address"]) if user["address"] else t(lang, "address_not_set"),
+        balance=f"{user['balance']:,.0f}".replace(",", " "),
+        wallet_id=wallet_id,
+        discount=f"{user['discount_percent']:.0f}",
+    )
+
+
+def terms_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("✅ Tanishib chiqdim", callback_data="accept_terms")]]
+    )
+
+
+TERMS_TEXT = (
+    "📜 <b>Foydalanish shartlari</b>\n"
+    "➖➖➖➖➖➖➖➖➖➖\n"
+    "📦 Yuklar odatda <b>8–15 kun</b> ichida yetkazib beriladi.\n"
+    "💳 To'lov amalga oshirilgandan so'ng pul qaytarilmaydi.\n"
+    "✅ Yuk sifati kafolatlanadi.\n"
+    "⭐ Faqat premium sifatli xizmat taqdim etamiz.\n\n"
+    "Davom etish uchun quyidagi tugmani bosing:"
+)
+
+
 def contact_request_keyboard(label: str = "📱 Raqamni yuborish") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton(label, request_contact=True)]],
@@ -362,7 +397,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(t(lang, "cancel_text"))
     if db.is_registered(chat_id):
-        await update.message.reply_text(t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang))
+        await update.message.reply_text(
+            t(lang, "main_menu_prompt"), parse_mode="HTML", reply_markup=main_menu_keyboard(lang)
+        )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -372,23 +409,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Adminlar (asosiy yoki yordamchi) uchun ro'yxatdan o'tish so'ralmaydi
     if db.is_admin(chat_id):
         await update.message.reply_text(
-            "🛠 Admin panelga xush kelibsiz.\n\n"
-            "👇 Tugmalardan foydalaning (Premium/Stars qo'shish va statistika endi tugma orqali, xatosiz):\n\n"
-            "Boshqa buyruqlar:\n"
-            "/addpromo KOD SUMMA -- promo kod qo'shish\n"
-            "/balance CHAT_ID -- foydalanuvchi hamyonini ko'rish\n"
-            "/addbalance CHAT_ID SUMMA -- hamyonga pul qo'shish\n"
-            "/removebalance CHAT_ID SUMMA -- hamyondan pul ayirish\n"
-            "/products -- barcha mahsulotlar ro'yxati\n"
-            "/removeproduct KEY -- mahsulotni o'chirish\n"
-            "/addshipment CHAT_ID KOD TAVSIF -- yangi yuk yaratish\n"
-            "/cargo KOD -- yuk holatini boshqarish\n"
-            "/stats -- statistika\n"
-            "/cancel -- joriy amalni bekor qilish\n"
-            "/admins -- adminlar ro'yxati\n"
-            + ("/addadmin CHAT_ID -- yordamchi admin qo'shish\n"
-               "/removeadmin CHAT_ID -- adminlikdan olib tashlash\n"
+            "🛠 <b>Admin panel</b>\n"
+            "➖➖➖➖➖➖➖➖➖➖\n"
+            "👇 Asosiy amallar tugmalar orqali (xatosiz):\n\n"
+            "<b>Boshqa buyruqlar:</b>\n"
+            "/addpromo KOD SUMMA — promo kod qo'shish\n"
+            "/balance CHAT_ID — hamyonni ko'rish\n"
+            "/addbalance CHAT_ID SUMMA — pul qo'shish\n"
+            "/removebalance CHAT_ID SUMMA — pul ayirish\n"
+            "/adddiscount KOD FOIZ — chegirma kodi yaratish\n"
+            "/setdiscount CHAT_ID FOIZ — mijozga to'g'ridan-to'g'ri chegirma berish\n"
+            "/products — mahsulotlar ro'yxati\n"
+            "/removeproduct KEY — mahsulotni o'chirish\n"
+            "/cargo KOD — yuk holatini boshqarish\n"
+            "/stats — statistika\n"
+            "/cancel — joriy amalni bekor qilish\n"
+            "/admins — adminlar ro'yxati\n"
+            + ("/addadmin CHAT_ID — yordamchi admin qo'shish\n"
+               "/removeadmin CHAT_ID — adminlikdan olib tashlash\n"
                if chat_id == MAIN_ADMIN_CHAT_ID else ""),
+            parse_mode="HTML",
             reply_markup=admin_panel_keyboard(),
         )
         return
@@ -397,8 +437,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = db.get_language(chat_id)
 
     if user["is_registered"] == 1:
+        if not user["terms_accepted"]:
+            await update.message.reply_text(TERMS_TEXT, parse_mode="HTML", reply_markup=terms_keyboard())
+            return
+
         await update.message.reply_text(
-            t(lang, "welcome_back", name=user["full_name"]),
+            t(lang, "welcome_back", name=html.escape(user["full_name"] or "")),
+            parse_mode="HTML",
             reply_markup=main_menu_keyboard(lang),
         )
         return
@@ -666,6 +711,81 @@ async def add_stars_product(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(f"✅ Qo'shildi: {label} — {price:,.0f} so'm".replace(",", " "))
 
 
+async def add_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not db.is_admin(chat_id):
+        await update.message.reply_text("Bu buyruq faqat admin uchun.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "To'g'ri format:\n/adddiscount KOD FOIZ\n\nMisol: /adddiscount YANGIYIL2026 15"
+        )
+        return
+
+    code, percent_str = context.args
+    code = code.upper()
+
+    try:
+        percent = float(percent_str)
+    except ValueError:
+        await update.message.reply_text("Foiz raqam bo'lishi kerak.")
+        return
+
+    if not (0 < percent <= 100):
+        await update.message.reply_text("Foiz 0 dan 100 gacha bo'lishi kerak.")
+        return
+
+    db.upsert_promo_code(code, percent, code_type="discount")
+    await update.message.reply_text(f"✅ Chegirma kodi saqlandi:\nKod: {code}\nChegirma: {percent:.0f}%")
+
+
+async def set_discount_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not db.is_admin(chat_id):
+        await update.message.reply_text("Bu buyruq faqat admin uchun.")
+        return
+
+    if len(context.args) != 2 or not context.args[0].lstrip("-").isdigit():
+        await update.message.reply_text(
+            "To'g'ri format:\n/setdiscount CHAT_ID FOIZ\n\nMisol: /setdiscount 123456789 10\n"
+            "(0 kiritsangiz, chegirma bekor qilinadi)"
+        )
+        return
+
+    target_id = int(context.args[0])
+
+    try:
+        percent = float(context.args[1])
+    except ValueError:
+        await update.message.reply_text("Foiz raqam bo'lishi kerak.")
+        return
+
+    if not (0 <= percent <= 100):
+        await update.message.reply_text("Foiz 0 dan 100 gacha bo'lishi kerak.")
+        return
+
+    user = db.get_user(target_id)
+    if user is None:
+        await update.message.reply_text("Bunday foydalanuvchi topilmadi.")
+        return
+
+    db.set_discount(target_id, percent)
+    await update.message.reply_text(f"✅ {target_id} uchun chegirma {percent:.0f}% qilib belgilandi.")
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=(
+                f"🏷 Sizga {percent:.0f}% chegirma faollashtirildi!"
+                if percent > 0
+                else "Chegirmangiz bekor qilindi."
+            ),
+        )
+    except Exception as e:
+        logger.warning("Foydalanuvchiga (%s) chegirma haqida xabar yuborilmadi: %s", target_id, e)
+
+
 async def remove_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not db.is_admin(chat_id):
@@ -699,6 +819,31 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("\n".join(lines))
 
 
+async def create_shipment_and_notify(
+    context: ContextTypes.DEFAULT_TYPE, target_id: int, tracking_code: str, description: str
+) -> int | None:
+    """Yuk yaratadi va mijozga xabar yuboradi. Muvaffaqiyatsiz bo'lsa None qaytaradi."""
+    shipment_id = db.create_shipment(tracking_code, target_id, description)
+    if shipment_id is None:
+        return None
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=(
+                f"📦 Sizga yangi yuk biriktirildi!\n\n"
+                f"🔖 Kuzatuv kodi: {tracking_code}\n"
+                f"📝 Tavsif: {description}\n"
+                f"📍 Holat: {CARGO_STATUSES['accepted']}\n\n"
+                "Holatni istalgan vaqtda \"📦 Yuk kuzatish\" bo'limidan tekshirib turishingiz mumkin."
+            ),
+        )
+    except Exception as e:
+        logger.warning("Foydalanuvchiga (%s) yuk haqida xabar yuborilmadi: %s", target_id, e)
+
+    return shipment_id
+
+
 async def add_shipment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not db.is_admin(chat_id):
@@ -721,7 +866,7 @@ async def add_shipment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Bunday foydalanuvchi topilmadi (u hali botga /start bosmagan).")
         return
 
-    shipment_id = db.create_shipment(tracking_code, target_id, description)
+    shipment_id = await create_shipment_and_notify(context, target_id, tracking_code, description)
     if shipment_id is None:
         await update.message.reply_text(f"❌ '{tracking_code}' kodi allaqachon band. Boshqa kod tanlang.")
         return
@@ -732,19 +877,75 @@ async def add_shipment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         reply_markup=cargo_admin_keyboard(shipment_id, "accepted"),
     )
 
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=(
-                f"📦 Sizga yangi yuk biriktirildi!\n\n"
-                f"🔖 Kuzatuv kodi: {tracking_code}\n"
-                f"📝 Tavsif: {description}\n"
-                f"📍 Holat: {CARGO_STATUSES['accepted']}\n\n"
-                "Holatni istalgan vaqtda \"📦 Yuk kuzatish\" bo'limidan tekshirib turishingiz mumkin."
-            ),
+
+async def handle_admin_shipment_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    text = (message.text or "").strip()
+
+    if not text.lstrip("-").isdigit():
+        await message.reply_text("Iltimos, faqat raqamlardan iborat Chat ID kiriting. Qaytadan urinib ko'ring:")
+        return
+
+    target_id = int(text)
+    user = db.get_user(target_id)
+    if user is None:
+        await message.reply_text(
+            "❌ Bunday foydalanuvchi topilmadi (u hali botga /start bosmagan). Chat ID'ni tekshirib, qaytadan kiriting:"
         )
-    except Exception as e:
-        logger.warning("Foydalanuvchiga (%s) yuk haqida xabar yuborilmadi: %s", target_id, e)
+        return
+
+    context.user_data["new_shipment_chatid"] = target_id
+    db.set_state(chat_id, "admin_waiting_shipment_code")
+    await message.reply_text(
+        f"👤 Mijoz: {user['full_name']}\n\nEndi kuzatuv kodini kiriting (masalan: UZ12345):"
+    )
+
+
+async def handle_admin_shipment_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    code = (message.text or "").strip().upper()
+
+    if not code:
+        await message.reply_text("Iltimos, kuzatuv kodini matn ko'rinishida kiriting.")
+        return
+
+    if db.get_shipment_by_code(code) is not None:
+        await message.reply_text(f"❌ '{code}' kodi allaqachon band. Boshqa kod kiriting:")
+        return
+
+    context.user_data["new_shipment_code"] = code
+    db.set_state(chat_id, "admin_waiting_shipment_desc")
+    await message.reply_text("Endi mahsulot tavsifini kiriting (masalan: iPhone 15 Pro Max):")
+
+
+async def handle_admin_shipment_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    description = (message.text or "").strip()
+
+    if not description:
+        await message.reply_text("Iltimos, tavsifni matn ko'rinishida kiriting.")
+        return
+
+    target_id = context.user_data.get("new_shipment_chatid")
+    tracking_code = context.user_data.get("new_shipment_code")
+
+    db.set_state(chat_id, None)
+    context.user_data.pop("new_shipment_chatid", None)
+    context.user_data.pop("new_shipment_code", None)
+
+    shipment_id = await create_shipment_and_notify(context, target_id, tracking_code, description)
+    if shipment_id is None:
+        await message.reply_text("❌ Xatolik: kod band bo'lib qoldi. Qaytadan /start > admin panel orqali urinib ko'ring.")
+        return
+
+    await message.reply_text(
+        f"✅ Yuk yaratildi!\n\n📦 Kod: {tracking_code}\n📝 Tavsif: {description}\n\n"
+        "Statusni boshqarish uchun pastdagi tugmalardan foydalaning:",
+        reply_markup=cargo_admin_keyboard(shipment_id, "accepted"),
+    )
 
 
 async def open_cargo_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -860,6 +1061,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await handle_admin_product_price(update, context)
             return
 
+        if state == "admin_waiting_shipment_chatid":
+            await handle_admin_shipment_chatid(update, context)
+            return
+
+        if state == "admin_waiting_shipment_code":
+            await handle_admin_shipment_code(update, context)
+            return
+
+        if state == "admin_waiting_shipment_desc":
+            await handle_admin_shipment_desc(update, context)
+            return
+
     user = db.create_user_if_not_exists(chat_id, update.effective_user.username)
 
     # Adminlar oddiy ro'yxatdan o'tish oqimiga tushmaydi
@@ -934,8 +1147,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ---------------------------------------------------------
     # 5) Hech qanday state yo'q -- asosiy menyu
     # ---------------------------------------------------------
+    if not user["terms_accepted"]:
+        await message.reply_text(TERMS_TEXT, parse_mode="HTML", reply_markup=terms_keyboard())
+        return
+
     await message.reply_text(
-        t(db.get_language(chat_id), "main_menu_prompt"), reply_markup=main_menu_keyboard(db.get_language(chat_id))
+        t(db.get_language(chat_id), "main_menu_prompt"),
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard(db.get_language(chat_id)),
     )
 
 
@@ -983,10 +1202,8 @@ async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYP
     # (aks holda u ekranda abadiy osilib qolaveradi)
     await message.reply_text("Rahmat! ✅", reply_markup=ReplyKeyboardRemove())
 
-    await message.reply_text(
-        t(lang, "registered_welcome"),
-        reply_markup=main_menu_keyboard(lang),
-    )
+    # Asosiy menyudan oldin -- bir martalik shartlarga rozilik ekrani
+    await message.reply_text(TERMS_TEXT, parse_mode="HTML", reply_markup=terms_keyboard())
 
     # Agar referal havolasi orqali kelgan bo'lsa, taklif qilgan odamga bonus beramiz
     referrer_id = user_before["referred_by"] if user_before else None
@@ -1015,6 +1232,13 @@ async def handle_payment_photo(
         return
 
     product = db.get_product(product_key) if product_key else None
+    user = db.get_user(chat_id)
+
+    final_price = None
+    if product is not None:
+        final_price = product["price"]
+        if user and user["discount_percent"] > 0:
+            final_price = round(product["price"] * (1 - user["discount_percent"] / 100))
 
     file_id = message.photo[-1].file_id  # eng katta o'lchamdagi rasm
     payment_id = db.insert_payment(
@@ -1022,11 +1246,19 @@ async def handle_payment_photo(
         file_id,
         product_key=product["key"] if product else None,
         product_label=product["label"] if product else None,
-        product_price=product["price"] if product else None,
+        product_price=final_price,
     )
 
-    user = db.get_user(chat_id)
-    product_line = f"🛒 Mahsulot: {product['label']} ({product['price']:,.0f} so'm)\n".replace(",", " ") if product else ""
+    if product is not None:
+        if user and user["discount_percent"] > 0:
+            product_line = (
+                f"🛒 Mahsulot: {product['label']} "
+                f"({product['price']:,.0f} so'm → {final_price:,.0f} so'm, -{user['discount_percent']:.0f}%)\n"
+            ).replace(",", " ")
+        else:
+            product_line = f"🛒 Mahsulot: {product['label']} ({product['price']:,.0f} so'm)\n".replace(",", " ")
+    else:
+        product_line = ""
     address_line = f"📍 Manzil: {user['address']}\n" if user["address"] else ""
     caption = (
         "🧾 Yangi to'lov cheki!\n\n"
@@ -1125,24 +1357,24 @@ async def handle_cargo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_transfer_recipient(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
+    wallet_id = (message.text or "").strip()
 
-    if not text.lstrip("-").isdigit():
-        await message.reply_text("Iltimos, faqat raqamlardan iborat Chat ID kiriting. Qaytadan urinib ko'ring:")
+    if not wallet_id.isdigit() or len(wallet_id) != 6:
+        await message.reply_text("Iltimos, 6 xonali Wallet ID kiriting. Qaytadan urinib ko'ring:")
         return
 
-    recipient_id = int(text)
+    recipient = db.get_user_by_wallet_id(wallet_id)
 
-    if recipient_id == chat_id:
-        await message.reply_text("O'zingizga pul o'tkaza olmaysiz. Boshqa Chat ID kiriting:")
-        return
-
-    recipient = db.get_user(recipient_id)
     if recipient is None or recipient["is_registered"] != 1:
         await message.reply_text(
-            "❌ Bunday foydalanuvchi topilmadi (u hali botga /start bosib ro'yxatdan o'tmagan). "
-            "Chat ID'ni tekshirib, qaytadan kiriting:"
+            "❌ Bunday Wallet ID topilmadi. Wallet ID'ni tekshirib, qaytadan kiriting:"
         )
+        return
+
+    recipient_id = recipient["chat_id"]
+
+    if recipient_id == chat_id:
+        await message.reply_text("O'zingizga pul o'tkaza olmaysiz. Boshqa Wallet ID kiriting:")
         return
 
     db.set_state(chat_id, f"waiting_transfer_amount:{recipient_id}")
@@ -1232,15 +1464,8 @@ async def handle_address_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
     user = db.get_user(chat_id)
     await message.reply_text(
-        t(
-            lang,
-            "profile_text",
-            name=user["full_name"] or "-",
-            phone=user["phone_number"] or "-",
-            username=f"@{user['username']}" if user["username"] else "-",
-            address=user["address"] or t(lang, "address_not_set"),
-            balance=f"{user['balance']:,.0f}".replace(",", " "),
-        ),
+        build_profile_text(lang, user),
+        parse_mode="HTML",
         reply_markup=profile_keyboard(lang),
     )
 
@@ -1265,6 +1490,16 @@ async def handle_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if db.has_used_promo(promo["id"], chat_id):
         await message.reply_text("⚠️ Siz bu promo koddan avval foydalangansiz.")
+        return
+
+    if promo["code_type"] == "discount":
+        db.set_discount(chat_id, promo["amount"])
+        db.redeem_promo(promo["id"], chat_id, 0)  # promo_usage'ga belgilash uchun, balansga ta'sir qilmaydi
+        await message.reply_text(
+            f"✅ Promo kod muvaffaqiyatli qo'llanildi!\n"
+            f"🏷 Sizga {promo['amount']:.0f}% chegirma faollashtirildi.\n\n"
+            "Bu chegirma keyingi xaridlaringizda avtomatik qo'llanadi."
+        )
         return
 
     db.redeem_promo(promo["id"], chat_id, promo["amount"])
@@ -1491,6 +1726,18 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
+    if data == "admin_addshipment":
+        if not db.is_admin(chat_id):
+            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
+            return
+
+        db.set_state(chat_id, "admin_waiting_shipment_chatid")
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id, text="Mijozning Chat ID raqamini kiriting:"
+        )
+        return
+
     if data == "admin_stats":
         if not db.is_admin(chat_id):
             await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
@@ -1514,21 +1761,27 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
+    if data == "accept_terms":
+        lang = db.get_language(chat_id)
+        db.set_terms_accepted(chat_id)
+        await query.answer(text="Rahmat! ✅")
+        user = db.get_user(chat_id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=t(lang, "welcome_back", name=html.escape(user["full_name"] or "")),
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(lang),
+        )
+        return
+
     if data == "menu_profile":
         lang = db.get_language(chat_id)
         await query.answer()
         user = db.get_user(chat_id)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=t(
-                lang,
-                "profile_text",
-                name=user["full_name"] or "-",
-                phone=user["phone_number"] or "-",
-                username=f"@{user['username']}" if user["username"] else "-",
-                address=user["address"] or t(lang, "address_not_set"),
-                balance=f"{user['balance']:,.0f}".replace(",", " "),
-            ),
+            text=build_profile_text(lang, user),
+            parse_mode="HTML",
             reply_markup=profile_keyboard(lang),
         )
         return
@@ -1547,15 +1800,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         user = db.get_user(chat_id)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=t(
-                lang,
-                "profile_text",
-                name=user["full_name"] or "-",
-                phone=user["phone_number"] or "-",
-                username=f"@{user['username']}" if user["username"] else "-",
-                address=user["address"] or t(lang, "address_not_set"),
-                balance=f"{user['balance']:,.0f}".replace(",", " "),
-            ),
+            text=build_profile_text(lang, user),
+            parse_mode="HTML",
             reply_markup=profile_keyboard(lang),
         )
         return
@@ -1568,9 +1814,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             text=(
                 "💸 Pul o'tkazish\n\n"
                 f"Komissiya: {TRANSFER_COMMISSION_RATE * 100:.0f}%\n\n"
-                "Qabul qiluvchining Chat ID raqamini kiriting:\n"
-                "(u sizga o'z ID'sini @userinfobot orqali bilib, yuborishi mumkin)"
+                "Qabul qiluvchining <b>Wallet ID</b>'sini kiriting:\n"
+                "(u o'z Wallet ID'sini Profil bo'limidan ko'rib, sizga yuborishi mumkin)"
             ),
+            parse_mode="HTML",
         )
         return
 
@@ -1584,7 +1831,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             db.set_language(chat_id, lang)
             await context.bot.send_message(chat_id=chat_id, text=t(lang, "language_changed"))
             await context.bot.send_message(
-                chat_id=chat_id, text=t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang)
+                chat_id=chat_id, text=t(lang, "main_menu_prompt"), parse_mode="HTML", reply_markup=main_menu_keyboard(lang)
             )
         else:
             # Ro'yxatdan o'tish jarayonida birinchi marta til tanlanyapti
@@ -1604,6 +1851,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await context.bot.send_message(
             chat_id=chat_id,
             text=t(lang, "referral_text", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " "), link=link, count=count),
+            parse_mode="HTML",
         )
         return
 
@@ -1620,15 +1868,17 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         lines = [t(lang, "orders_header"), ""]
         status_icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
         for p in payments:
-            product = f" — {p['product_label']}" if p["product_label"] else ""
+            product = f" — {html.escape(p['product_label'])}" if p["product_label"] else ""
             lines.append(f"{status_icons.get(p['status'], '•')} #{p['id']}{product} ({p['status']})")
 
         if shipments:
             lines.append("")
             for s in shipments:
-                lines.append(f"📦 {s['tracking_code']} — {CARGO_STATUSES.get(s['status'], s['status'])}")
+                lines.append(
+                    f"📦 {html.escape(s['tracking_code'])} — {CARGO_STATUSES.get(s['status'], s['status'])}"
+                )
 
-        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
         return
 
     if data == "menu_cargo":
@@ -1685,7 +1935,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         lang = db.get_language(chat_id)
         await query.answer()
         await context.bot.send_message(
-            chat_id=chat_id, text=t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang)
+            chat_id=chat_id, text=t(lang, "main_menu_prompt"), parse_mode="HTML", reply_markup=main_menu_keyboard(lang)
         )
         return
 
@@ -1733,13 +1983,27 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         db.set_state(chat_id, f"waiting_payment_photo:{product_key}")
         await query.answer()
+
+        user = db.get_user(chat_id)
+        discount = user["discount_percent"] if user else 0
+
+        if discount > 0:
+            discounted_price = round(product["price"] * (1 - discount / 100))
+            price_line = (
+                f"Narxi: <s>{product['price']:,.0f} so'm</s> <b>{discounted_price:,.0f} so'm</b> "
+                f"(-{discount:.0f}%)"
+            ).replace(",", " ")
+        else:
+            price_line = f"Narxi: {product['price']:,.0f} so'm".replace(",", " ")
+
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                f"Siz tanladingiz: {product['label']}\n"
-                f"Narxi: {product['price']:,.0f} so'm\n\n"
+                f"Siz tanladingiz: {html.escape(product['label'])}\n"
+                f"{price_line}\n\n"
                 "Chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
-            ).replace(",", " "),
+            ),
+            parse_mode="HTML",
         )
         return
 
@@ -1860,6 +2124,8 @@ def main() -> None:
     application.add_handler(CommandHandler("removebalance", remove_balance_command))
     application.add_handler(CommandHandler("addpremium", add_premium_product))
     application.add_handler(CommandHandler("addstars", add_stars_product))
+    application.add_handler(CommandHandler("adddiscount", add_discount_code))
+    application.add_handler(CommandHandler("setdiscount", set_discount_command))
     application.add_handler(CommandHandler("removeproduct", remove_product))
     application.add_handler(CommandHandler("products", list_products))
     application.add_handler(CommandHandler("addshipment", add_shipment))
