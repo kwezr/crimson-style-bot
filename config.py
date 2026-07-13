@@ -14,7 +14,7 @@ MAIN_ADMIN_CHAT_ID = 2002780745
 BOT_USERNAME = "CrimsonStyleBot"
 
 # Referal orqali do'stini taklif qilgan foydalanuvchiga beriladigan bonus (so'm)
-REFERRAL_BONUS = 800
+REFERRAL_BONUS = 1000
 
 # Hamyondan hamyonga pul o'tkazishda olinadigan komissiya (2% = 0.02)
 TRANSFER_COMMISSION_RATE = 0.02
