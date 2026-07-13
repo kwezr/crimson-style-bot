@@ -64,6 +64,14 @@ def init_db() -> None:
                 product_key TEXT,
                 product_label TEXT,
                 product_price REAL,
+                recipient_info TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS categories (
+                key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -132,6 +140,10 @@ def init_db() -> None:
                 commission REAL NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
             """
         )
         conn.commit()
@@ -145,12 +157,20 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN wallet_id TEXT",
             "ALTER TABLE users ADD COLUMN discount_percent REAL NOT NULL DEFAULT 0",
             "ALTER TABLE promo_codes ADD COLUMN code_type TEXT NOT NULL DEFAULT 'cash'",
+            "ALTER TABLE payments ADD COLUMN recipient_info TEXT",
         ):
             try:
                 conn.execute(ddl)
                 conn.commit()
             except sqlite3.OperationalError:
                 pass  # ustun allaqachon mavjud
+
+        # Standart kategoriyalarni bir martalik urug'lab qo'yamiz (mavjud bo'lsa tegilmaydi)
+        for key, label in (("premium", "💎 Telegram Premium"), ("stars", "⭐ Telegram Stars")):
+            conn.execute(
+                "INSERT OR IGNORE INTO categories (key, label, is_active) VALUES (?, ?, 1)", (key, label)
+            )
+        conn.commit()
 
 
 # ---------------------------------------------------------------------
@@ -432,13 +452,14 @@ def insert_payment(
     product_key: str | None = None,
     product_label: str | None = None,
     product_price: float | None = None,
+    recipient_info: str | None = None,
 ) -> int:
     with closing(get_connection()) as conn:
         cur = conn.execute(
             """INSERT INTO payments
-               (user_chat_id, photo_file_id, status, product_key, product_label, product_price)
-               VALUES (?, ?, 'pending', ?, ?, ?)""",
-            (user_chat_id, photo_file_id, product_key, product_label, product_price),
+               (user_chat_id, photo_file_id, status, product_key, product_label, product_price, recipient_info)
+               VALUES (?, ?, 'pending', ?, ?, ?, ?)""",
+            (user_chat_id, photo_file_id, product_key, product_label, product_price, recipient_info),
         )
         conn.commit()
         return cur.lastrowid
@@ -516,6 +537,39 @@ def mark_support_answered(support_id: int) -> None:
 
 
 # ---------------------------------------------------------------------
+# Umumiy sozlamalar (key-value) -- masalan chegirma uchun minimal summa
+# ---------------------------------------------------------------------
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with closing(get_connection()) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row is not None else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute(
+            """INSERT INTO settings (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (key, value),
+        )
+        conn.commit()
+
+
+def get_min_discount_amount() -> float:
+    """Chegirma ishlashi uchun to'lov qancha summadan yuqori bo'lishi kerakligi.
+    Sozlanmagan bo'lsa -- 0 (ya'ni istalgan summaga ishlaydi)."""
+    value = get_setting("min_discount_amount", "0")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_min_discount_amount(amount: float) -> None:
+    set_setting("min_discount_amount", str(amount))
+
+
+# ---------------------------------------------------------------------
 # Promo kodlar
 # ---------------------------------------------------------------------
 def get_active_promo(code: str) -> sqlite3.Row | None:
@@ -553,7 +607,43 @@ def upsert_promo_code(code: str, amount: float, code_type: str = "cash") -> None
 
 
 # ---------------------------------------------------------------------
-# Mahsulotlar (Telegram Premium / Stars) -- narxlarni admin o'zi boshqaradi
+# Kategoriyalar (STORE) -- admin xohlagancha yangi turkum qo'sha oladi
+# ---------------------------------------------------------------------
+def create_category(key: str, label: str) -> bool:
+    with closing(get_connection()) as conn:
+        try:
+            conn.execute(
+                "INSERT INTO categories (key, label, is_active) VALUES (?, ?, 1)", (key, label)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False  # bu key allaqachon band
+
+
+def get_category(key: str) -> sqlite3.Row | None:
+    with closing(get_connection()) as conn:
+        return conn.execute("SELECT * FROM categories WHERE key = ?", (key,)).fetchone()
+
+
+def get_all_categories(active_only: bool = True) -> list[sqlite3.Row]:
+    with closing(get_connection()) as conn:
+        if active_only:
+            return conn.execute(
+                "SELECT * FROM categories WHERE is_active = 1 ORDER BY created_at ASC"
+            ).fetchall()
+        return conn.execute("SELECT * FROM categories ORDER BY created_at ASC").fetchall()
+
+
+def deactivate_category(key: str) -> bool:
+    with closing(get_connection()) as conn:
+        cur = conn.execute("UPDATE categories SET is_active = 0 WHERE key = ?", (key,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------
+# Mahsulotlar (Telegram Premium / Stars / boshqa STORE turkumlari) -- narxlarni admin o'zi boshqaradi
 # ---------------------------------------------------------------------
 def upsert_product(key: str, category: str, label: str, price: float) -> None:
     with closing(get_connection()) as conn:
