@@ -36,6 +36,9 @@ def init_db() -> None:
                 language TEXT NOT NULL DEFAULT 'uz',
                 referred_by INTEGER,
                 address TEXT,
+                terms_accepted INTEGER NOT NULL DEFAULT 0,
+                wallet_id TEXT UNIQUE,
+                discount_percent REAL NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -100,6 +103,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 code TEXT UNIQUE NOT NULL,
                 amount REAL NOT NULL,
+                code_type TEXT NOT NULL DEFAULT 'cash',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -137,6 +141,10 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'uz'",
             "ALTER TABLE users ADD COLUMN referred_by INTEGER",
             "ALTER TABLE users ADD COLUMN address TEXT",
+            "ALTER TABLE users ADD COLUMN terms_accepted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN wallet_id TEXT",
+            "ALTER TABLE users ADD COLUMN discount_percent REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE promo_codes ADD COLUMN code_type TEXT NOT NULL DEFAULT 'cash'",
         ):
             try:
                 conn.execute(ddl)
@@ -223,6 +231,46 @@ def set_language(chat_id: int, language: str) -> None:
 def save_address(chat_id: int, address: str) -> None:
     with closing(get_connection()) as conn:
         conn.execute("UPDATE users SET address = ? WHERE chat_id = ?", (address, chat_id))
+        conn.commit()
+
+
+def set_terms_accepted(chat_id: int) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute("UPDATE users SET terms_accepted = 1 WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+
+
+def ensure_wallet_id(chat_id: int) -> str:
+    """Agar foydalanuvchida wallet_id hali bo'lmasa, noyob 6 xonali ID yaratib beradi."""
+    import random
+
+    with closing(get_connection()) as conn:
+        row = conn.execute("SELECT wallet_id FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+        if row and row["wallet_id"]:
+            return row["wallet_id"]
+
+        for _ in range(20):
+            candidate = str(random.randint(100000, 999999))
+            exists = conn.execute("SELECT 1 FROM users WHERE wallet_id = ?", (candidate,)).fetchone()
+            if not exists:
+                conn.execute("UPDATE users SET wallet_id = ? WHERE chat_id = ?", (candidate, chat_id))
+                conn.commit()
+                return candidate
+
+        # Juda kam ehtimol, lekin bo'lmasa chat_id'ni o'zini ishlatamiz
+        conn.execute("UPDATE users SET wallet_id = ? WHERE chat_id = ?", (str(chat_id), chat_id))
+        conn.commit()
+        return str(chat_id)
+
+
+def get_user_by_wallet_id(wallet_id: str) -> sqlite3.Row | None:
+    with closing(get_connection()) as conn:
+        return conn.execute("SELECT * FROM users WHERE wallet_id = ?", (wallet_id,)).fetchone()
+
+
+def set_discount(chat_id: int, percent: float) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute("UPDATE users SET discount_percent = ? WHERE chat_id = ?", (percent, chat_id))
         conn.commit()
 
 
@@ -494,12 +542,12 @@ def redeem_promo(promo_id: int, chat_id: int, amount: float) -> None:
         conn.commit()
 
 
-def upsert_promo_code(code: str, amount: float) -> None:
+def upsert_promo_code(code: str, amount: float, code_type: str = "cash") -> None:
     with closing(get_connection()) as conn:
         conn.execute(
-            """INSERT INTO promo_codes (code, amount, is_active) VALUES (?, ?, 1)
-               ON CONFLICT(code) DO UPDATE SET amount = excluded.amount, is_active = 1""",
-            (code, amount),
+            """INSERT INTO promo_codes (code, amount, code_type, is_active) VALUES (?, ?, ?, 1)
+               ON CONFLICT(code) DO UPDATE SET amount = excluded.amount, code_type = excluded.code_type, is_active = 1""",
+            (code, amount, code_type),
         )
         conn.commit()
 
