@@ -32,7 +32,7 @@ from telegram.ext import (
 )
 
 import database as db
-from config import BOT_TOKEN, MAIN_ADMIN_CHAT_ID
+from config import BOT_TOKEN, BOT_USERNAME, MAIN_ADMIN_CHAT_ID, REFERRAL_BONUS, TRANSFER_COMMISSION_RATE
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -41,17 +41,159 @@ logger = logging.getLogger(__name__)
 
 
 # =======================================================================
+# Ko'p til qo'llab-quvvatlash (o'zbek / rus / ingliz)
+# Faqat asosiy foydalanuvchi oqimi tarjima qilingan; admin panel doim
+# o'zbek tilida qoladi (chunki adminlar o'zgarmaydi).
+# =======================================================================
+TEXTS = {
+    "choose_language": {
+        "uz": "Tilni tanlang / Выберите язык / Choose language:",
+        "ru": "Tilni tanlang / Выберите язык / Choose language:",
+        "en": "Tilni tanlang / Выберите язык / Choose language:",
+    },
+    "welcome_new": {
+        "uz": "Assalomu alaykum! Botimizga xush kelibsiz. 🙌\n\nRo'yxatdan o'tish uchun avval to'liq ismingizni yozib yuboring:",
+        "ru": "Здравствуйте! Добро пожаловать в наш бот. 🙌\n\nДля регистрации напишите, пожалуйста, ваше полное имя:",
+        "en": "Hello! Welcome to our bot. 🙌\n\nTo register, please send your full name:",
+    },
+    "ask_name_invalid": {
+        "uz": "Iltimos, to'g'ri ism kiriting (kamida 2 ta harf):",
+        "ru": "Пожалуйста, введите корректное имя (минимум 2 буквы):",
+        "en": "Please enter a valid name (at least 2 letters):",
+    },
+    "ask_phone": {
+        "uz": "Rahmat, {name}! Endi telefon raqamingizni pastdagi tugma orqali yuboring:",
+        "ru": "Спасибо, {name}! Теперь отправьте свой номер телефона через кнопку ниже:",
+        "en": "Thanks, {name}! Now send your phone number using the button below:",
+    },
+    "phone_button": {
+        "uz": "📱 Raqamni yuborish",
+        "ru": "📱 Отправить номер",
+        "en": "📱 Send phone number",
+    },
+    "registered_welcome": {
+        "uz": "🎉 Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\nQuyidagi bo'limlardan birini tanlang:",
+        "ru": "🎉 Вы успешно зарегистрированы!\n\nВыберите один из разделов ниже:",
+        "en": "🎉 You have registered successfully!\n\nChoose one of the sections below:",
+    },
+    "welcome_back": {
+        "uz": "Xush kelibsiz, {name}! 👋\n\nQuyidagi bo'limlardan birini tanlang:",
+        "ru": "Добро пожаловать, {name}! 👋\n\nВыберите один из разделов ниже:",
+        "en": "Welcome back, {name}! 👋\n\nChoose one of the sections below:",
+    },
+    "main_menu_prompt": {
+        "uz": "Quyidagi bo'limlardan birini tanlang 👇",
+        "ru": "Выберите один из разделов ниже 👇",
+        "en": "Choose one of the sections below 👇",
+    },
+    "btn_payment": {"uz": "💰 To'lov", "ru": "💰 Оплата", "en": "💰 Payment"},
+    "btn_wallet": {"uz": "💼 Hamyon", "ru": "💼 Кошелёк", "en": "💼 Wallet"},
+    "btn_support": {"uz": "🎧 Support", "ru": "🎧 Поддержка", "en": "🎧 Support"},
+    "btn_promo": {"uz": "🎟 Promo kod", "ru": "🎟 Промокод", "en": "🎟 Promo code"},
+    "btn_premium": {"uz": "⭐ Premium & Stars", "ru": "⭐ Premium и Stars", "en": "⭐ Premium & Stars"},
+    "btn_cargo": {"uz": "📦 Yuk kuzatish", "ru": "📦 Отследить груз", "en": "📦 Track cargo"},
+    "btn_referral": {"uz": "🎁 Referal", "ru": "🎁 Реферал", "en": "🎁 Referral"},
+    "btn_orders": {"uz": "📜 Buyurtmalarim", "ru": "📜 Мои заказы", "en": "📜 My orders"},
+    "btn_language": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
+    "wallet_text": {
+        "uz": "💼 Hamyoningiz\n\nJoriy balans: {balance} so'm\n\nBalansni to'ldirish uchun \"🎟 Promo kod\" yoki \"🎁 Referal\" bo'limidan foydalaning.",
+        "ru": "💼 Ваш кошелёк\n\nТекущий баланс: {balance} сум\n\nЧтобы пополнить баланс, используйте раздел «🎟 Промокод» или «🎁 Реферал».",
+        "en": "💼 Your wallet\n\nCurrent balance: {balance} UZS\n\nTo top up, use \"🎟 Promo code\" or \"🎁 Referral\".",
+    },
+    "promo_prompt": {
+        "uz": "Promo kodni kiriting: 🎟",
+        "ru": "Введите промокод: 🎟",
+        "en": "Enter the promo code: 🎟",
+    },
+    "promo_invalid": {
+        "uz": "❌ Bunday promo kod topilmadi yoki u faol emas.",
+        "ru": "❌ Такой промокод не найден или он неактивен.",
+        "en": "❌ This promo code was not found or is inactive.",
+    },
+    "promo_used": {
+        "uz": "⚠️ Siz bu promo koddan avval foydalangansiz.",
+        "ru": "⚠️ Вы уже использовали этот промокод.",
+        "en": "⚠️ You have already used this promo code.",
+    },
+    "promo_success": {
+        "uz": "✅ Promo kod muvaffaqiyatli qo'llanildi!\n💰 Balansingizga {amount} so'm qo'shildi.\n\nJoriy balans: {balance} so'm",
+        "ru": "✅ Промокод успешно применён!\n💰 На ваш баланс зачислено {amount} сум.\n\nТекущий баланс: {balance} сум",
+        "en": "✅ Promo code applied successfully!\n💰 {amount} UZS added to your balance.\n\nCurrent balance: {balance} UZS",
+    },
+    "cancel_text": {
+        "uz": "❌ Amal bekor qilindi.",
+        "ru": "❌ Действие отменено.",
+        "en": "❌ Action cancelled.",
+    },
+    "referral_text": {
+        "uz": "🎁 Do'stlaringizni taklif qiling!\n\nHar bir taklif qilingan do'stingiz ro'yxatdan o'tsa, hamyoningizga {bonus} so'm qo'shiladi.\n\n🔗 Sizning havolangiz:\n{link}\n\n👥 Taklif qilingan do'stlar: {count}",
+        "ru": "🎁 Приглашайте друзей!\n\nЗа каждого друга, который зарегистрируется по вашей ссылке, на ваш кошелёк начислится {bonus} сум.\n\n🔗 Ваша ссылка:\n{link}\n\n👥 Приглашено друзей: {count}",
+        "en": "🎁 Invite your friends!\n\nFor every friend who registers using your link, {bonus} UZS will be added to your wallet.\n\n🔗 Your link:\n{link}\n\n👥 Friends invited: {count}",
+    },
+    "referral_bonus_notice": {
+        "uz": "🎉 Sizning havolangiz orqali yangi do'stingiz ro'yxatdan o'tdi!\n💰 Hamyoningizga {bonus} so'm qo'shildi.",
+        "ru": "🎉 По вашей ссылке зарегистрировался новый друг!\n💰 На ваш кошелёк начислено {bonus} сум.",
+        "en": "🎉 A new friend registered using your link!\n💰 {bonus} UZS added to your wallet.",
+    },
+    "orders_header": {
+        "uz": "📜 Sizning buyurtmalaringiz:",
+        "ru": "📜 Ваши заказы:",
+        "en": "📜 Your orders:",
+    },
+    "orders_empty": {
+        "uz": "Sizda hali birorta ham buyurtma yo'q.",
+        "ru": "У вас пока нет заказов.",
+        "en": "You don't have any orders yet.",
+    },
+    "language_changed": {
+        "uz": "✅ Til o'zbekchaga o'zgartirildi.",
+        "ru": "✅ Язык изменён на русский.",
+        "en": "✅ Language changed to English.",
+    },
+}
+
+
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = lang if lang in ("uz", "ru", "en") else "uz"
+    template = TEXTS.get(key, {}).get(lang) or TEXTS.get(key, {}).get("uz", key)
+    return template.format(**kwargs) if kwargs else template
+
+
+# =======================================================================
 # Umumiy klaviaturalar
 # =======================================================================
-def main_menu_keyboard() -> InlineKeyboardMarkup:
+def main_menu_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("💰 To'lov", callback_data="menu_payment")],
-            [InlineKeyboardButton("💼 Hamyon", callback_data="menu_wallet")],
-            [InlineKeyboardButton("🎧 Support", callback_data="menu_support")],
-            [InlineKeyboardButton("🎟 Promo kod", callback_data="menu_promo")],
-            [InlineKeyboardButton("⭐ Premium & Stars", callback_data="menu_premium")],
-            [InlineKeyboardButton("📦 Yuk kuzatish", callback_data="menu_cargo")],
+            [
+                InlineKeyboardButton(t(lang, "btn_payment"), callback_data="menu_payment"),
+                InlineKeyboardButton(t(lang, "btn_wallet"), callback_data="menu_wallet"),
+            ],
+            [
+                InlineKeyboardButton(t(lang, "btn_support"), callback_data="menu_support"),
+                InlineKeyboardButton(t(lang, "btn_promo"), callback_data="menu_promo"),
+            ],
+            [
+                InlineKeyboardButton(t(lang, "btn_premium"), callback_data="menu_premium"),
+                InlineKeyboardButton(t(lang, "btn_cargo"), callback_data="menu_cargo"),
+            ],
+            [
+                InlineKeyboardButton(t(lang, "btn_referral"), callback_data="menu_referral"),
+                InlineKeyboardButton(t(lang, "btn_orders"), callback_data="menu_orders"),
+            ],
+            [InlineKeyboardButton(t(lang, "btn_language"), callback_data="menu_language")],
+        ]
+    )
+
+
+def language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="lang_uz"),
+                InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
+            ]
         ]
     )
 
@@ -107,13 +249,51 @@ def product_list_keyboard(products, category: str) -> InlineKeyboardMarkup:
 
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📢 Barchaga xabar yuborish", callback_data="admin_broadcast")]]
+        [
+            [InlineKeyboardButton("📢 Barchaga xabar yuborish", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("➕ Mahsulot qo'shish (Premium/Stars)", callback_data="admin_addproduct")],
+            [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
+        ]
     )
 
 
-def contact_request_keyboard() -> ReplyKeyboardMarkup:
+def admin_product_category_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("💎 Telegram Premium", callback_data="admin_addproduct_cat_premium")],
+            [InlineKeyboardButton("⭐ Telegram Stars", callback_data="admin_addproduct_cat_stars")],
+        ]
+    )
+
+
+def wallet_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
+    transfer_label = {"uz": "💸 Pul o'tkazish", "ru": "💸 Перевести деньги", "en": "💸 Transfer money"}
+    back_label = {"uz": "« Orqaga", "ru": "« Назад", "en": "« Back"}
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(transfer_label.get(lang, transfer_label["uz"]), callback_data="wallet_transfer")],
+            [InlineKeyboardButton(back_label.get(lang, back_label["uz"]), callback_data="menu_back")],
+        ]
+    )
+
+
+def rating_keyboard(payment_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⭐" * n, callback_data=f"rate_{payment_id}_{n}") for n in range(1, 6)]]
+    )
+
+
+def slugify(text: str) -> str:
+    """Matndan xavfsiz, bo'shliqsiz KEY yasaydi (admin buni ko'rmaydi ham)."""
+    import re
+
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug or "item"
+
+
+def contact_request_keyboard(label: str = "📱 Raqamni yuborish") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 Raqamni yuborish", request_contact=True)]],
+        [[KeyboardButton(label, request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -136,6 +316,21 @@ def payment_admin_keyboard(payment_id: int, user_chat_id: int) -> InlineKeyboard
 # =======================================================================
 # /start -- ro'yxatdan o'tish YOKI admin panel
 # =======================================================================
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    lang = db.get_language(chat_id)
+    db.set_state(chat_id, None)
+    context.user_data.clear()
+
+    if db.is_admin(chat_id):
+        await update.message.reply_text("❌ Bekor qilindi.", reply_markup=admin_panel_keyboard())
+        return
+
+    await update.message.reply_text(t(lang, "cancel_text"))
+    if db.is_registered(chat_id):
+        await update.message.reply_text(t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang))
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     username = update.effective_user.username
@@ -144,17 +339,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if db.is_admin(chat_id):
         await update.message.reply_text(
             "🛠 Admin panelga xush kelibsiz.\n\n"
-            "Buyruqlar:\n"
+            "👇 Tugmalardan foydalaning (Premium/Stars qo'shish va statistika endi tugma orqali, xatosiz):\n\n"
+            "Boshqa buyruqlar:\n"
             "/addpromo KOD SUMMA -- promo kod qo'shish\n"
             "/balance CHAT_ID -- foydalanuvchi hamyonini ko'rish\n"
-            "/addbalance CHAT_ID SUMMA -- hamyonga to'g'ridan-to'g'ri pul qo'shish\n"
+            "/addbalance CHAT_ID SUMMA -- hamyonga pul qo'shish\n"
             "/removebalance CHAT_ID SUMMA -- hamyondan pul ayirish\n"
-            "/addpremium KEY NARX NOM -- Premium tarif qo'shish\n"
-            "/addstars KEY NARX NOM -- Stars paketi qo'shish\n"
-            "/removeproduct KEY -- mahsulotni o'chirish\n"
             "/products -- barcha mahsulotlar ro'yxati\n"
+            "/removeproduct KEY -- mahsulotni o'chirish\n"
             "/addshipment CHAT_ID KOD TAVSIF -- yangi yuk yaratish\n"
-            "/cargo KOD -- yuk holatini boshqarish panelini ochish\n"
+            "/cargo KOD -- yuk holatini boshqarish\n"
+            "/stats -- statistika\n"
+            "/cancel -- joriy amalni bekor qilish\n"
             "/admins -- adminlar ro'yxati\n"
             + ("/addadmin CHAT_ID -- yordamchi admin qo'shish\n"
                "/removeadmin CHAT_ID -- adminlikdan olib tashlash\n"
@@ -164,19 +360,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     user = db.create_user_if_not_exists(chat_id, username)
+    lang = db.get_language(chat_id)
 
     if user["is_registered"] == 1:
         await update.message.reply_text(
-            f"Xush kelibsiz, {user['full_name']}! 👋\n\nQuyidagi bo'limlardan birini tanlang:",
-            reply_markup=main_menu_keyboard(),
+            t(lang, "welcome_back", name=user["full_name"]),
+            reply_markup=main_menu_keyboard(lang),
         )
         return
 
+    # Referal havolasi orqali kelganmi? (masalan /start ref123456)
+    if context.args and context.args[0].startswith("ref") and user["referred_by"] is None:
+        try:
+            referrer_id = int(context.args[0][3:])
+            db.set_referrer(chat_id, referrer_id)
+        except ValueError:
+            pass
+
+    # Yangi foydalanuvchi -- avval tilni tanlaydi
+    await update.message.reply_text(t(lang, "choose_language"), reply_markup=language_keyboard())
+
+
+async def handle_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str) -> None:
+    db.set_language(chat_id, lang)
     db.set_state(chat_id, "waiting_name")
-    await update.message.reply_text(
-        "Assalomu alaykum! Botimizga xush kelibsiz. 🙌\n\n"
-        "Ro'yxatdan o'tish uchun avval to'liq ismingizni yozib yuboring:",
-        reply_markup=ReplyKeyboardRemove(),
+    await context.bot.send_message(
+        chat_id=chat_id, text=t(lang, "welcome_new"), reply_markup=ReplyKeyboardRemove()
     )
 
 
@@ -263,6 +472,28 @@ async def removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     target_id = int(context.args[0])
     db.remove_admin(target_id)
     await update.message.reply_text(f"✅ {target_id} adminlikdan olib tashlandi.")
+
+
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not db.is_admin(chat_id):
+        await update.message.reply_text("Bu buyruq faqat admin uchun.")
+        return
+
+    stats = db.get_stats()
+    avg_rating, rating_count = db.get_rating_stats()
+    await update.message.reply_text(
+        (
+            "📊 Statistika\n\n"
+            f"👥 Ro'yxatdan o'tganlar: {stats['total_users']}\n"
+            f"⏳ Kutilayotgan cheklar: {stats['pending_payments']}\n"
+            f"✅ Tasdiqlangan to'lovlar: {stats['approved_payments']}\n"
+            f"💰 Tasdiqlangan summa: {stats['approved_sum']:,.0f} so'm\n"
+            f"📦 Jami yuklar: {stats['total_shipments']}\n"
+            f"⭐ O'rtacha reyting: {avg_rating:.1f} ({rating_count} ta baho)\n"
+            f"💸 O'tkazmalardan komissiya: {stats['total_commission']:,.0f} so'm".replace(",", " ")
+        ).replace(",", " ")
+    )
 
 
 async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -587,6 +818,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await handle_broadcast_message(update, context)
             return
 
+        if state == "admin_waiting_product_name":
+            await handle_admin_product_name(update, context)
+            return
+
+        if state == "admin_waiting_product_price":
+            await handle_admin_product_price(update, context)
+            return
+
     user = db.create_user_if_not_exists(chat_id, update.effective_user.username)
 
     # Adminlar oddiy ro'yxatdan o'tish oqimiga tushmaydi
@@ -640,10 +879,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # ---------------------------------------------------------
+    # 6) Hamyondan hamyonga pul o'tkazish
+    # ---------------------------------------------------------
+    if state == "waiting_transfer_recipient":
+        await handle_transfer_recipient(update, context)
+        return
+
+    if (state or "").startswith("waiting_transfer_amount:"):
+        recipient_id = int(state.split(":", 1)[1])
+        await handle_transfer_amount(update, context, recipient_id)
+        return
+
+    # ---------------------------------------------------------
     # 5) Hech qanday state yo'q -- asosiy menyu
     # ---------------------------------------------------------
     await message.reply_text(
-        "Quyidagi bo'limlardan birini tanlang 👇", reply_markup=main_menu_keyboard()
+        t(db.get_language(chat_id), "main_menu_prompt"), reply_markup=main_menu_keyboard(db.get_language(chat_id))
     )
 
 
@@ -651,37 +902,40 @@ async def handle_waiting_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = update.effective_message
     chat_id = update.effective_chat.id
     text = (message.text or "").strip()
+    lang = db.get_language(chat_id)
 
     if len(text) < 2:
-        await message.reply_text("Iltimos, to'g'ri ism kiriting (kamida 2 ta harf):")
+        await message.reply_text(t(lang, "ask_name_invalid"))
         return
 
     db.save_name(chat_id, text)
     await message.reply_text(
-        f"Rahmat, {text}! Endi telefon raqamingizni pastdagi tugma orqali yuboring:",
-        reply_markup=contact_request_keyboard(),
+        t(lang, "ask_phone", name=text),
+        reply_markup=contact_request_keyboard(t(lang, "phone_button")),
     )
 
 
 async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat_id = update.effective_chat.id
+    lang = db.get_language(chat_id)
     contact = message.contact
 
     if contact is None:
         await message.reply_text(
             'Iltimos, telefon raqamingizni faqat pastdagi "📱 Raqamni yuborish" tugmasi orqali yuboring.',
-            reply_markup=contact_request_keyboard(),
+            reply_markup=contact_request_keyboard(t(lang, "phone_button")),
         )
         return
 
     if contact.user_id != chat_id:
         await message.reply_text(
             "Iltimos, faqat o'zingizning raqamingizni yuboring.",
-            reply_markup=contact_request_keyboard(),
+            reply_markup=contact_request_keyboard(t(lang, "phone_button")),
         )
         return
 
+    user_before = db.get_user(chat_id)
     db.save_phone_and_finish_registration(chat_id, contact.phone_number)
 
     # Avvalgi "Raqamni yuborish" pastki tugmasini majburan olib tashlaymiz
@@ -689,9 +943,24 @@ async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.reply_text("Rahmat! ✅", reply_markup=ReplyKeyboardRemove())
 
     await message.reply_text(
-        "🎉 Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\nQuyidagi bo'limlardan birini tanlang:",
-        reply_markup=main_menu_keyboard(),
+        t(lang, "registered_welcome"),
+        reply_markup=main_menu_keyboard(lang),
     )
+
+    # Agar referal havolasi orqali kelgan bo'lsa, taklif qilgan odamga bonus beramiz
+    referrer_id = user_before["referred_by"] if user_before else None
+    if referrer_id:
+        db.add_balance(referrer_id, REFERRAL_BONUS)
+        referrer_lang = db.get_language(referrer_id)
+        try:
+            await context.bot.send_message(
+                chat_id=referrer_id,
+                text=t(referrer_lang, "referral_bonus_notice", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " ")),
+            )
+        except Exception as e:
+            logger.warning("Referal bonusi haqida (%s) xabar yuborilmadi: %s", referrer_id, e)
+
+
 
 
 async def handle_payment_photo(
@@ -810,6 +1079,96 @@ async def handle_cargo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
 
+async def handle_transfer_recipient(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    text = (message.text or "").strip()
+
+    if not text.lstrip("-").isdigit():
+        await message.reply_text("Iltimos, faqat raqamlardan iborat Chat ID kiriting. Qaytadan urinib ko'ring:")
+        return
+
+    recipient_id = int(text)
+
+    if recipient_id == chat_id:
+        await message.reply_text("O'zingizga pul o'tkaza olmaysiz. Boshqa Chat ID kiriting:")
+        return
+
+    recipient = db.get_user(recipient_id)
+    if recipient is None or recipient["is_registered"] != 1:
+        await message.reply_text(
+            "❌ Bunday foydalanuvchi topilmadi (u hali botga /start bosib ro'yxatdan o'tmagan). "
+            "Chat ID'ni tekshirib, qaytadan kiriting:"
+        )
+        return
+
+    db.set_state(chat_id, f"waiting_transfer_amount:{recipient_id}")
+    await message.reply_text(
+        f"👤 Qabul qiluvchi: {recipient['full_name']}\n\nNecha so'm o'tkazmoqchisiz?"
+    )
+
+
+async def handle_transfer_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, recipient_id: int) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    text = (message.text or "").strip().replace(" ", "")
+
+    db.set_state(chat_id, None)
+
+    try:
+        amount = float(text)
+    except ValueError:
+        await message.reply_text("Summa faqat raqam bo'lishi kerak.")
+        return
+
+    if amount <= 0:
+        await message.reply_text("Summa musbat son bo'lishi kerak.")
+        return
+
+    sender_balance = db.get_balance(chat_id)
+    if sender_balance < amount:
+        await message.reply_text(
+            f"❌ Hamyoningizda yetarli mablag' yo'q.\nJoriy balans: {sender_balance:,.0f} so'm".replace(",", " ")
+        )
+        return
+
+    commission = round(amount * TRANSFER_COMMISSION_RATE)
+    net_amount = amount - commission
+
+    success = db.transfer_balance(chat_id, recipient_id, amount, commission)
+    if not success:
+        await message.reply_text("❌ O'tkazma amalga oshmadi. Balansingizni tekshirib, qaytadan urinib ko'ring.")
+        return
+
+    sender = db.get_user(chat_id)
+    recipient = db.get_user(recipient_id)
+
+    await message.reply_text(
+        (
+            f"✅ O'tkazma muvaffaqiyatli amalga oshdi!\n\n"
+            f"👤 Qabul qiluvchi: {recipient['full_name']}\n"
+            f"💰 Yuborilgan summa: {amount:,.0f} so'm\n"
+            f"💸 Komissiya ({TRANSFER_COMMISSION_RATE * 100:.0f}%): {commission:,.0f} so'm\n"
+            f"📥 Qabul qiluvchi oldi: {net_amount:,.0f} so'm\n\n"
+            f"Joriy balansingiz: {db.get_balance(chat_id):,.0f} so'm"
+        ).replace(",", " ")
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=recipient_id,
+            text=(
+                f"💸 Sizga pul o'tkazma keldi!\n\n"
+                f"👤 Kimdan: {sender['full_name']}\n"
+                f"💰 Summa: {net_amount:,.0f} so'm\n\n"
+                f"Joriy balansingiz: {db.get_balance(recipient_id):,.0f} so'm"
+            ).replace(",", " "),
+        )
+    except Exception as e:
+        logger.warning("Qabul qiluvchiga (%s) o'tkazma haqida xabar yuborilmadi: %s", recipient_id, e)
+
+
+
 async def handle_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat_id = update.effective_chat.id
@@ -894,6 +1253,54 @@ async def handle_direct_message(
         await message.reply_text("❌ Xabar yuborilmadi -- foydalanuvchi botni bloklagan bo'lishi mumkin.")
 
 
+async def handle_admin_product_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    name = (message.text or "").strip()
+
+    if not name:
+        await message.reply_text("Iltimos, mahsulot nomini matn ko'rinishida yozing.")
+        return
+
+    context.user_data["new_product_label"] = name
+    db.set_state(chat_id, "admin_waiting_product_price")
+    await message.reply_text("Endi narxini kiriting (faqat raqam, so'mda). Masalan: 45000")
+
+
+async def handle_admin_product_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    price_text = (message.text or "").strip().replace(" ", "")
+
+    try:
+        price = float(price_text)
+    except ValueError:
+        await message.reply_text("Narx faqat raqam bo'lishi kerak. Masalan: 45000. Qaytadan kiriting:")
+        return
+
+    if price <= 0:
+        await message.reply_text("Narx musbat son bo'lishi kerak. Qaytadan kiriting:")
+        return
+
+    category = context.user_data.get("new_product_category", "premium")
+    label = context.user_data.get("new_product_label", "Mahsulot")
+
+    key = f"{category}_{slugify(label)}"
+    if db.get_product(key) is not None:
+        key = f"{key}_{int(price)}"  # to'qnashuv bo'lsa, narxni ham qo'shib key'ni noyob qilamiz
+
+    db.upsert_product(key, category, label, price)
+
+    db.set_state(chat_id, None)
+    context.user_data.pop("new_product_category", None)
+    context.user_data.pop("new_product_label", None)
+
+    cat_label = "💎 Premium" if category == "premium" else "⭐ Stars"
+    await message.reply_text(
+        f"✅ Mahsulot qo'shildi!\n\n{cat_label}\n📝 {label}\n💰 {price:,.0f} so'm".replace(",", " ")
+    )
+
+
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin 'Barchaga xabar yuborish' tugmasidan keyin yozgan matnni hamma foydalanuvchiga yuboradi."""
     message = update.effective_message
@@ -958,6 +1365,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await handle_payment_decision(update, context)
         return
 
+    if data.startswith("rate_"):
+        _, payment_id_str, stars_str = data.split("_")
+        db.add_rating(chat_id, int(payment_id_str), int(stars_str))
+        await query.answer(text="Rahmat! 🙏")
+        try:
+            await query.edit_message_text(f"⭐ Baholaganingiz uchun rahmat! Sizning bahoyingiz: {'⭐' * int(stars_str)}")
+        except Exception:
+            pass
+        return
+
     if data == "admin_broadcast":
         if not db.is_admin(chat_id):
             await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
@@ -971,17 +1388,134 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
+    if data == "admin_addproduct":
+        if not db.is_admin(chat_id):
+            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
+            return
+
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id, text="Qaysi turkumga qo'shmoqchisiz?", reply_markup=admin_product_category_keyboard()
+        )
+        return
+
+    if data.startswith("admin_addproduct_cat_"):
+        if not db.is_admin(chat_id):
+            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
+            return
+
+        category = data.replace("admin_addproduct_cat_", "")
+        context.user_data["new_product_category"] = category
+        db.set_state(chat_id, "admin_waiting_product_name")
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id, text="Mahsulot nomini kiriting (masalan: Telegram Premium 6 oy):"
+        )
+        return
+
+    if data == "admin_stats":
+        if not db.is_admin(chat_id):
+            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
+            return
+
+        await query.answer()
+        stats = db.get_stats()
+        avg_rating, rating_count = db.get_rating_stats()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "📊 Statistika\n\n"
+                f"👥 Ro'yxatdan o'tganlar: {stats['total_users']}\n"
+                f"⏳ Kutilayotgan cheklar: {stats['pending_payments']}\n"
+                f"✅ Tasdiqlangan to'lovlar: {stats['approved_payments']}\n"
+                f"💰 Tasdiqlangan summa: {stats['approved_sum']:,.0f} so'm\n"
+                f"📦 Jami yuklar: {stats['total_shipments']}\n"
+                f"⭐ O'rtacha reyting: {avg_rating:.1f} ({rating_count} ta baho)\n"
+            f"💸 O'tkazmalardan komissiya: {stats['total_commission']:,.0f} so'm".replace(",", " ")
+            ).replace(",", " "),
+        )
+        return
+
     if data == "menu_wallet":
+        lang = db.get_language(chat_id)
         await query.answer()
         balance = db.get_balance(chat_id)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=(
-                f"💼 Hamyoningiz\n\n"
-                f"Joriy balans: {balance:,.0f} so'm\n\n"
-                "Balansni to'ldirish uchun \"🎟 Promo kod\" bo'limidan foydalaning."
-            ).replace(",", " "),
+            text=t(lang, "wallet_text", balance=f"{balance:,.0f}".replace(",", " ")),
+            reply_markup=wallet_keyboard(lang),
         )
+        return
+
+    if data == "wallet_transfer":
+        db.set_state(chat_id, "waiting_transfer_recipient")
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "💸 Pul o'tkazish\n\n"
+                f"Komissiya: {TRANSFER_COMMISSION_RATE * 100:.0f}%\n\n"
+                "Qabul qiluvchining Chat ID raqamini kiriting:\n"
+                "(u sizga o'z ID'sini @userinfobot orqali bilib, yuborishi mumkin)"
+            ),
+        )
+        return
+
+    if data.startswith("lang_"):
+        lang = data.replace("lang_", "")
+        user = db.get_user(chat_id)
+        await query.answer()
+
+        if user is not None and user["is_registered"] == 1:
+            # Ro'yxatdan o'tgan foydalanuvchi tilni o'zgartiryapti
+            db.set_language(chat_id, lang)
+            await context.bot.send_message(chat_id=chat_id, text=t(lang, "language_changed"))
+            await context.bot.send_message(
+                chat_id=chat_id, text=t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang)
+            )
+        else:
+            # Ro'yxatdan o'tish jarayonida birinchi marta til tanlanyapti
+            await handle_language_selected(update, context, chat_id, lang)
+        return
+
+    if data == "menu_language":
+        await query.answer()
+        await context.bot.send_message(chat_id=chat_id, text=t(db.get_language(chat_id), "choose_language"), reply_markup=language_keyboard())
+        return
+
+    if data == "menu_referral":
+        lang = db.get_language(chat_id)
+        await query.answer()
+        link = f"https://t.me/{BOT_USERNAME}?start=ref{chat_id}"
+        count = db.get_referral_count(chat_id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=t(lang, "referral_text", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " "), link=link, count=count),
+        )
+        return
+
+    if data == "menu_orders":
+        lang = db.get_language(chat_id)
+        await query.answer()
+        payments = db.get_user_payments(chat_id)
+        shipments = db.get_user_shipments(chat_id)
+
+        if not payments and not shipments:
+            await context.bot.send_message(chat_id=chat_id, text=t(lang, "orders_empty"))
+            return
+
+        lines = [t(lang, "orders_header"), ""]
+        status_icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
+        for p in payments:
+            product = f" — {p['product_label']}" if p["product_label"] else ""
+            lines.append(f"{status_icons.get(p['status'], '•')} #{p['id']}{product} ({p['status']})")
+
+        if shipments:
+            lines.append("")
+            for s in shipments:
+                lines.append(f"📦 {s['tracking_code']} — {CARGO_STATUSES.get(s['status'], s['status'])}")
+
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
         return
 
     if data == "menu_cargo":
@@ -1035,9 +1569,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if data == "menu_back":
+        lang = db.get_language(chat_id)
         await query.answer()
         await context.bot.send_message(
-            chat_id=chat_id, text="Quyidagi bo'limlardan birini tanlang 👇", reply_markup=main_menu_keyboard()
+            chat_id=chat_id, text=t(lang, "main_menu_prompt"), reply_markup=main_menu_keyboard(lang)
         )
         return
 
@@ -1077,6 +1612,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer(text="Bu mahsulot endi mavjud emas.", show_alert=True)
             return
 
+        if db.has_pending_payment(chat_id):
+            await query.answer(
+                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
+            )
+            return
+
         db.set_state(chat_id, f"waiting_payment_photo:{product_key}")
         await query.answer()
         await context.bot.send_message(
@@ -1090,10 +1631,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if data == "menu_payment":
+        if db.has_pending_payment(chat_id):
+            await query.answer(
+                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
+            )
+            return
         db.set_state(chat_id, "waiting_payment_photo")
         await query.answer()
         await context.bot.send_message(
-            chat_id=chat_id, text="Chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
+            chat_id=chat_id,
+            text=(
+                "🧾 To'lov\n\n"
+                "ℹ️ Diqqat: to'lovga faqat mini web-ilova orqali berilgan buyurtmalarning cheklari qabul qilinadi.\n\n"
+                "Chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting."
+            ),
         )
 
     elif data == "menu_support":
@@ -1106,7 +1657,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "menu_promo":
         db.set_state(chat_id, "waiting_promo_code")
         await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text="Promo kodni kiriting: 🎟")
+        await context.bot.send_message(chat_id=chat_id, text=t(db.get_language(chat_id), "promo_prompt"))
 
     else:
         await query.answer(text="Noma'lum amal.")
@@ -1144,6 +1695,16 @@ async def handle_payment_decision(update: Update, context: ContextTypes.DEFAULT_
     )
     await context.bot.send_message(chat_id=payment["user_chat_id"], text=user_text)
 
+    if is_approve:
+        try:
+            await context.bot.send_message(
+                chat_id=payment["user_chat_id"],
+                text="⭐ Xizmatimizni baholab o'tasizmi?",
+                reply_markup=rating_keyboard(payment_id),
+            )
+        except Exception as e:
+            logger.warning("Reyting so'rovi (%s) yuborilmadi: %s", payment["user_chat_id"], e)
+
     # Boshqa qaysi adminlarga ham shu chek yuborilgan bo'lsa, ularning xabarini ham yangilaymiz
     status_label = "✅ TASDIQLANDI" if is_approve else "❌ RAD ETILDI"
     decided_by = query.from_user.full_name if query.from_user else "Admin"
@@ -1175,6 +1736,8 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(CommandHandler("stats", show_stats))
     application.add_handler(CommandHandler("addpromo", addpromo))
     application.add_handler(CommandHandler("addadmin", addadmin))
     application.add_handler(CommandHandler("removeadmin", removeadmin))
