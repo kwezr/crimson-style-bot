@@ -33,6 +33,16 @@ def init_db() -> None:
                 balance REAL NOT NULL DEFAULT 0,
                 state TEXT,
                 is_registered INTEGER NOT NULL DEFAULT 0,
+                language TEXT NOT NULL DEFAULT 'uz',
+                referred_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_chat_id INTEGER NOT NULL,
+                payment_id INTEGER,
+                stars INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -109,9 +119,28 @@ def init_db() -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS transfers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_chat_id INTEGER NOT NULL,
+                recipient_chat_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                commission REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         conn.commit()
+
+        # Eski bazalarda bo'lmasligi mumkin bo'lgan ustunlarni qo'shib qo'yamiz (migratsiya)
+        for ddl in (
+            "ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'uz'",
+            "ALTER TABLE users ADD COLUMN referred_by INTEGER",
+        ):
+            try:
+                conn.execute(ddl)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # ustun allaqachon mavjud
 
 
 # ---------------------------------------------------------------------
@@ -129,7 +158,7 @@ def create_user_if_not_exists(chat_id: int, username: str | None) -> sqlite3.Row
 
     with closing(get_connection()) as conn:
         conn.execute(
-            "INSERT INTO users (chat_id, username, state, is_registered) VALUES (?, ?, 'waiting_name', 0)",
+            "INSERT INTO users (chat_id, username, state, is_registered) VALUES (?, ?, NULL, 0)",
             (chat_id, username),
         )
         conn.commit()
@@ -181,6 +210,120 @@ def get_all_registered_chat_ids() -> list[int]:
     with closing(get_connection()) as conn:
         rows = conn.execute("SELECT chat_id FROM users WHERE is_registered = 1").fetchall()
         return [row["chat_id"] for row in rows]
+
+
+def set_language(chat_id: int, language: str) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute("UPDATE users SET language = ? WHERE chat_id = ?", (language, chat_id))
+        conn.commit()
+
+
+def get_language(chat_id: int) -> str:
+    user = get_user(chat_id)
+    return user["language"] if user and user["language"] else "uz"
+
+
+def set_referrer(chat_id: int, referrer_chat_id: int) -> None:
+    """Faqat foydalanuvchida referred_by hali bo'sh bo'lsa va o'zini o'zi taklif qilmagan bo'lsa yozadi."""
+    if referrer_chat_id == chat_id:
+        return
+    with closing(get_connection()) as conn:
+        conn.execute(
+            "UPDATE users SET referred_by = ? WHERE chat_id = ? AND referred_by IS NULL",
+            (referrer_chat_id, chat_id),
+        )
+        conn.commit()
+
+
+def get_referral_count(chat_id: int) -> int:
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM users WHERE referred_by = ? AND is_registered = 1",
+            (chat_id,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+
+def get_user_payments(chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
+    with closing(get_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM payments WHERE user_chat_id = ? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+
+
+def get_user_shipments(chat_id: int, limit: int = 10) -> list[sqlite3.Row]:
+    with closing(get_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM shipments WHERE user_chat_id = ? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+
+
+def has_pending_payment(chat_id: int) -> bool:
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT id FROM payments WHERE user_chat_id = ? AND status = 'pending' LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        return row is not None
+
+
+def add_rating(user_chat_id: int, payment_id: int | None, stars: int) -> None:
+    with closing(get_connection()) as conn:
+        conn.execute(
+            "INSERT INTO ratings (user_chat_id, payment_id, stars) VALUES (?, ?, ?)",
+            (user_chat_id, payment_id, stars),
+        )
+        conn.commit()
+
+
+def get_rating_stats() -> tuple[float, int]:
+    with closing(get_connection()) as conn:
+        row = conn.execute("SELECT AVG(stars) AS avg_stars, COUNT(*) AS cnt FROM ratings").fetchone()
+        avg_stars = row["avg_stars"] or 0.0
+        return float(avg_stars), row["cnt"]
+
+
+def get_stats() -> dict:
+    with closing(get_connection()) as conn:
+        total_users = conn.execute("SELECT COUNT(*) AS c FROM users WHERE is_registered = 1").fetchone()["c"]
+        pending_payments = conn.execute("SELECT COUNT(*) AS c FROM payments WHERE status = 'pending'").fetchone()["c"]
+        approved_payments = conn.execute("SELECT COUNT(*) AS c FROM payments WHERE status = 'approved'").fetchone()["c"]
+        approved_sum = conn.execute(
+            "SELECT COALESCE(SUM(product_price), 0) AS s FROM payments WHERE status = 'approved' AND product_price IS NOT NULL"
+        ).fetchone()["s"]
+        total_shipments = conn.execute("SELECT COUNT(*) AS c FROM shipments").fetchone()["c"]
+        total_commission = conn.execute("SELECT COALESCE(SUM(commission), 0) AS s FROM transfers").fetchone()["s"]
+        return {
+            "total_users": total_users,
+            "pending_payments": pending_payments,
+            "approved_payments": approved_payments,
+            "approved_sum": approved_sum,
+            "total_shipments": total_shipments,
+            "total_commission": total_commission,
+        }
+
+
+# ---------------------------------------------------------------------
+# Hamyondan hamyonga pul o'tkazish (komissiya bilan)
+# ---------------------------------------------------------------------
+def transfer_balance(sender_chat_id: int, recipient_chat_id: int, amount: float, commission: float) -> bool:
+    """Yuboruvchidan to'liq summani ayiradi, qabul qiluvchiga (summa - komissiya) qo'shadi."""
+    with closing(get_connection()) as conn:
+        sender = conn.execute("SELECT balance FROM users WHERE chat_id = ?", (sender_chat_id,)).fetchone()
+        if sender is None or sender["balance"] < amount:
+            return False
+
+        net_amount = amount - commission
+        conn.execute("UPDATE users SET balance = balance - ? WHERE chat_id = ?", (amount, sender_chat_id))
+        conn.execute("UPDATE users SET balance = balance + ? WHERE chat_id = ?", (net_amount, recipient_chat_id))
+        conn.execute(
+            "INSERT INTO transfers (sender_chat_id, recipient_chat_id, amount, commission) VALUES (?, ?, ?, ?)",
+            (sender_chat_id, recipient_chat_id, amount, commission),
+        )
+        conn.commit()
+        return True
 
 
 # ---------------------------------------------------------------------
