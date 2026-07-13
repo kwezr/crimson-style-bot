@@ -14,6 +14,8 @@ sifatida ishga tushiring (masalan systemd, screen yoki tmux orqali).
 
 import html
 import logging
+import os
+from urllib.parse import quote, unquote
 
 from telegram import (
     InlineKeyboardButton,
@@ -92,7 +94,7 @@ TEXTS = {
     "btn_support": {"uz": "🎧 Support", "ru": "🎧 Поддержка", "en": "🎧 Support"},
     "btn_promo": {"uz": "🎟 Promo kod", "ru": "🎟 Промокод", "en": "🎟 Promo code"},
     "btn_transfer": {"uz": "💸 Pul o'tkazish", "ru": "💸 Перевести деньги", "en": "💸 Transfer money"},
-    "btn_premium": {"uz": "⭐ Premium & Stars", "ru": "⭐ Premium и Stars", "en": "⭐ Premium & Stars"},
+    "btn_premium": {"uz": "🛍 STORE", "ru": "🛍 STORE", "en": "🛍 STORE"},
     "btn_cargo": {"uz": "📦 Yuk kuzatish", "ru": "📦 Отследить груз", "en": "📦 Track cargo"},
     "btn_referral": {"uz": "🎁 Referal", "ru": "🎁 Реферал", "en": "🎁 Referral"},
     "btn_orders": {"uz": "📜 Buyurtmalarim", "ru": "📜 Мои заказы", "en": "📜 My orders"},
@@ -195,7 +197,7 @@ def main_menu_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
                 InlineKeyboardButton(t(lang, "btn_support"), callback_data="menu_support"),
             ],
             [
-                InlineKeyboardButton(t(lang, "btn_premium"), callback_data="menu_premium"),
+                InlineKeyboardButton(t(lang, "btn_premium"), callback_data="menu_store"),
                 InlineKeyboardButton(t(lang, "btn_cargo"), callback_data="menu_cargo"),
             ],
             [
@@ -247,14 +249,13 @@ def cargo_admin_keyboard(shipment_id: int, current_status: str) -> InlineKeyboar
     return InlineKeyboardMarkup(rows)
 
 
-def premium_category_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("💎 Telegram Premium", callback_data="premium_cat_premium")],
-            [InlineKeyboardButton("⭐ Telegram Stars", callback_data="premium_cat_stars")],
-            [InlineKeyboardButton("« Orqaga", callback_data="menu_back")],
-        ]
-    )
+def store_category_keyboard() -> InlineKeyboardMarkup:
+    categories = db.get_all_categories()
+    rows = [
+        [InlineKeyboardButton(c["label"], callback_data=f"store_cat_{c['key']}")] for c in categories
+    ]
+    rows.append([InlineKeyboardButton("« Orqaga", callback_data="menu_back")])
+    return InlineKeyboardMarkup(rows)
 
 
 def product_list_keyboard(products, category: str) -> InlineKeyboardMarkup:
@@ -267,7 +268,7 @@ def product_list_keyboard(products, category: str) -> InlineKeyboardMarkup:
         ]
         for p in products
     ]
-    rows.append([InlineKeyboardButton("« Orqaga", callback_data="menu_premium")])
+    rows.append([InlineKeyboardButton("« Orqaga", callback_data="menu_store")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -275,7 +276,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📢 Barchaga xabar yuborish", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("➕ Mahsulot qo'shish (Premium/Stars)", callback_data="admin_addproduct")],
+            [InlineKeyboardButton("➕ Mahsulot qo'shish", callback_data="admin_addproduct")],
             [InlineKeyboardButton("📦 Yuk qo'shish", callback_data="admin_addshipment")],
             [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
         ]
@@ -283,12 +284,13 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
 
 
 def admin_product_category_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("💎 Telegram Premium", callback_data="admin_addproduct_cat_premium")],
-            [InlineKeyboardButton("⭐ Telegram Stars", callback_data="admin_addproduct_cat_stars")],
-        ]
-    )
+    categories = db.get_all_categories()
+    rows = [
+        [InlineKeyboardButton(c["label"], callback_data=f"admin_addproduct_cat_{c['key']}")]
+        for c in categories
+    ]
+    rows.append([InlineKeyboardButton("➕ Yangi kategoriya", callback_data="admin_addcategory")])
+    return InlineKeyboardMarkup(rows)
 
 
 def profile_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
@@ -359,6 +361,44 @@ TERMS_TEXT = (
     "Davom etish uchun quyidagi tugmani bosing:"
 )
 
+# Shartlar PDF fayli shu bot.py bilan bir papkada turadi
+# (serverga bot.py bilan birga shartlar.pdf ni ham yuklab qo'ying).
+TERMS_PDF_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shartlar.pdf")
+
+TERMS_CAPTION = (
+    "📜 Foydalanish shartlari ilovada (PDF fayl ko'rinishida).\n"
+    "Iltimos, tanishib chiqing va pastdagi tugmani bosing:"
+)
+
+
+async def send_terms(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Shartlar faylini (PDF) 'Tanishib chiqdim' tugmasi bilan yuboradi.
+
+    Fayl topilmasa yoki yuborishda xatolik chiqsa, bot to'xtab qolmasin
+    uchun eski matnli variantga qaytamiz -- foydalanuvchi baribir
+    davom eta oladi.
+    """
+    if os.path.exists(TERMS_PDF_PATH):
+        try:
+            with open(TERMS_PDF_PATH, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=f,
+                    filename="shartlar.pdf",
+                    caption=TERMS_CAPTION,
+                    reply_markup=terms_keyboard(),
+                )
+            return
+        except Exception as e:
+            logger.warning("Shartlar faylini yuborib bo'lmadi (%s), matnga qaytildi: %s", chat_id, e)
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=TERMS_TEXT,
+        parse_mode="HTML",
+        reply_markup=terms_keyboard(),
+    )
+
 
 def contact_request_keyboard(label: str = "📱 Raqamni yuborish") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -419,6 +459,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/removebalance CHAT_ID SUMMA — pul ayirish\n"
             "/adddiscount KOD FOIZ — chegirma kodi yaratish\n"
             "/setdiscount CHAT_ID FOIZ — mijozga to'g'ridan-to'g'ri chegirma berish\n"
+            "/setdiscountmin SUMMA — chegirma ishlaydigan minimal to'lov summasi\n"
+            "/addcategory KEY NOM — STORE'ga yangi turkum qo'shish (masalan TON kripta)\n"
             "/products — mahsulotlar ro'yxati\n"
             "/removeproduct KEY — mahsulotni o'chirish\n"
             "/cargo KOD — yuk holatini boshqarish\n"
@@ -438,7 +480,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if user["is_registered"] == 1:
         if not user["terms_accepted"]:
-            await update.message.reply_text(TERMS_TEXT, parse_mode="HTML", reply_markup=terms_keyboard())
+            await send_terms(context, chat_id)
             return
 
         await update.message.reply_text(
@@ -711,6 +753,32 @@ async def add_stars_product(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(f"✅ Qo'shildi: {label} — {price:,.0f} so'm".replace(",", " "))
 
 
+async def add_category_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not db.is_admin(chat_id):
+        await update.message.reply_text("Bu buyruq faqat admin uchun.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "To'g'ri format:\n/addcategory KEY NOM\n\nMisol: /addcategory ton 💎 TON Kripta"
+        )
+        return
+
+    key = slugify(context.args[0])
+    label = " ".join(context.args[1:])
+
+    if db.get_category(key) is not None:
+        await update.message.reply_text("Bunday KEY bilan kategoriya allaqachon mavjud.")
+        return
+
+    db.create_category(key, label)
+    await update.message.reply_text(
+        f"✅ Yangi kategoriya qo'shildi:\nKEY: {key}\nNomi: {label}\n\n"
+        f"Endi shu turkumga mahsulot qo'shish uchun \"➕ Mahsulot qo'shish\" tugmasidan foydalaning."
+    )
+
+
 async def add_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not db.is_admin(chat_id):
@@ -777,13 +845,50 @@ async def set_discount_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(
             chat_id=target_id,
             text=(
-                f"🏷 Sizga {percent:.0f}% chegirma faollashtirildi!"
+                f"🏷 Sizga {percent:.0f}% chegirma faollashtirildi!\n"
+                "(Faqat \"To'lov\" bo'limidagi veb-sayt to'lovlariga, 1 marta ishlatiladi. "
+                "Telegram Premium/Stars xaridlariga qo'llanilmaydi.)"
                 if percent > 0
                 else "Chegirmangiz bekor qilindi."
             ),
         )
     except Exception as e:
         logger.warning("Foydalanuvchiga (%s) chegirma haqida xabar yuborilmadi: %s", target_id, e)
+
+
+async def set_discount_min_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not db.is_admin(chat_id):
+        await update.message.reply_text("Bu buyruq faqat admin uchun.")
+        return
+
+    if len(context.args) != 1:
+        current = db.get_min_discount_amount()
+        await update.message.reply_text(
+            "To'g'ri format:\n/setdiscountmin SUMMA\n\n"
+            "Misol: /setdiscountmin 100000\n"
+            "(Chegirma faqat shu summadan yuqori to'lovlarga ishlaydi. 0 qilsangiz -- har qanday summaga ishlaydi)\n\n"
+            f"Hozirgi qiymat: {current:,.0f} so'm".replace(",", " ")
+        )
+        return
+
+    try:
+        amount = float(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Summa raqam bo'lishi kerak.")
+        return
+
+    if amount < 0:
+        await update.message.reply_text("Summa manfiy bo'lishi mumkin emas.")
+        return
+
+    db.set_min_discount_amount(amount)
+    await update.message.reply_text(
+        f"✅ Chegirma uchun minimal to'lov summasi {amount:,.0f} so'm qilib belgilandi.\n"
+        "(Bundan past to'lovlarga chegirma taklif qilinmaydi, foydalanuvchining chegirmasi keyingi safarga saqlanib qoladi.)".replace(
+            ",", " "
+        )
+    )
 
 
 async def remove_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -813,7 +918,8 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     lines = ["📦 Faol mahsulotlar:\n"]
     for p in products:
-        cat_label = "💎 Premium" if p["category"] == "premium" else "⭐ Stars"
+        cat = db.get_category(p["category"])
+        cat_label = cat["label"] if cat else p["category"]
         lines.append(f"{cat_label} | {p['key']} | {p['label']} — {p['price']:,.0f} so'm".replace(",", " "))
 
     await update.message.reply_text("\n".join(lines))
@@ -1061,6 +1167,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await handle_admin_product_price(update, context)
             return
 
+        if state == "admin_waiting_category_key":
+            await handle_admin_category_key(update, context)
+            return
+
+        if state == "admin_waiting_category_label":
+            await handle_admin_category_label(update, context)
+            return
+
         if state == "admin_waiting_shipment_chatid":
             await handle_admin_shipment_chatid(update, context)
             return
@@ -1099,9 +1213,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ---------------------------------------------------------
     # 2) To'lov cheki
     # ---------------------------------------------------------
+    if (state or "").startswith("waiting_recipient_info:"):
+        product_key = state.split(":", 1)[1]
+        await handle_recipient_info_input(update, context, product_key)
+        return
+
+    if state == "waiting_payment_amount":
+        await handle_payment_amount_input(update, context)
+        return
+
+    if (state or "").startswith("waiting_payment_photo_amt:"):
+        _, final_s, orig_s, pct_s = state.split(":")
+        await handle_payment_photo(
+            update,
+            context,
+            final_amount=float(final_s),
+            original_amount=float(orig_s),
+            discount_pct=float(pct_s),
+        )
+        return
+
     if state == "waiting_payment_photo" or (state or "").startswith("waiting_payment_photo:"):
-        product_key = state.split(":", 1)[1] if state and ":" in state else None
-        await handle_payment_photo(update, context, product_key)
+        product_key = None
+        recipient_info = None
+        if state and state.startswith("waiting_payment_photo:"):
+            parts = state.split(":", 2)
+            product_key = parts[1] if len(parts) > 1 and parts[1] else None
+            recipient_info = unquote(parts[2]) if len(parts) > 2 and parts[2] else None
+        await handle_payment_photo(update, context, product_key, recipient_info=recipient_info)
         return
 
     # ---------------------------------------------------------
@@ -1148,7 +1287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 5) Hech qanday state yo'q -- asosiy menyu
     # ---------------------------------------------------------
     if not user["terms_accepted"]:
-        await message.reply_text(TERMS_TEXT, parse_mode="HTML", reply_markup=terms_keyboard())
+        await send_terms(context, chat_id)
         return
 
     await message.reply_text(
@@ -1203,7 +1342,7 @@ async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.reply_text("Rahmat! ✅", reply_markup=ReplyKeyboardRemove())
 
     # Asosiy menyudan oldin -- bir martalik shartlarga rozilik ekrani
-    await message.reply_text(TERMS_TEXT, parse_mode="HTML", reply_markup=terms_keyboard())
+    await send_terms(context, chat_id)
 
     # Agar referal havolasi orqali kelgan bo'lsa, taklif qilgan odamga bonus beramiz
     referrer_id = user_before["referred_by"] if user_before else None
@@ -1221,8 +1360,85 @@ async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 
+async def handle_recipient_info_input(update: Update, context: ContextTypes.DEFAULT_TYPE, product_key: str) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    text = (message.text or "").strip()
+
+    if not text:
+        await message.reply_text("Iltimos, username yoki telefon raqamini matn ko'rinishida yozing:")
+        return
+
+    if len(text) > 100:
+        await message.reply_text("Juda uzun matn. Iltimos, qisqaroq yozing:")
+        return
+
+    db.set_state(chat_id, f"waiting_payment_photo:{product_key}:{quote(text)}")
+    await message.reply_text(
+        f"✅ Qabul qilindi: {text}\n\nEndi chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
+    )
+
+
+def discount_choice_keyboard(final_amount: float, original_amount: float, discount_pct: float) -> InlineKeyboardMarkup:
+    # Callback_data ichida summalarni butun son (tiyinsiz) qilib yuboramiz
+    payload = f"{round(final_amount)}:{round(original_amount)}:{discount_pct:.0f}"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(f"✅ Chegirmani qo'llash (-{discount_pct:.0f}%)", callback_data=f"apply_discount_yes:{payload}")],
+            [InlineKeyboardButton("❌ Ishlatmayman", callback_data=f"apply_discount_no:{payload}")],
+        ]
+    )
+
+
+async def handle_payment_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+
+    try:
+        amount = float(text)
+    except ValueError:
+        await message.reply_text("Iltimos, to'lov summasini faqat raqamda yozing (masalan: 150000).")
+        return
+
+    if amount <= 0:
+        await message.reply_text("Summa noto'g'ri. Iltimos, qaytadan kiriting.")
+        return
+
+    user = db.get_user(chat_id)
+    min_amount = db.get_min_discount_amount()
+
+    if user and user["discount_percent"] > 0 and amount >= min_amount:
+        # Chegirma mavjud va shart bajarilgan -- foydalanuvchi o'zi hal qiladi, ishlatadimi yoki yo'q
+        discounted = round(amount * (1 - user["discount_percent"] / 100))
+        db.set_state(chat_id, None)
+        await message.reply_text(
+            (
+                f"💳 Kiritilgan summa: {amount:,.0f} so'm\n"
+                f"🏷 Sizda {user['discount_percent']:.0f}% chegirma mavjud (bu safar ishlatilsa, keyingi safar qolmaydi).\n\n"
+                f"Chegirmani shu to'lovga qo'llaymizmi?"
+            ).replace(",", " "),
+            reply_markup=discount_choice_keyboard(discounted, amount, user["discount_percent"]),
+        )
+        return
+
+    # Chegirma yo'q yoki summa minimal chegaradan past -- to'g'ridan-to'g'ri chekni so'raymiz
+    db.set_state(chat_id, f"waiting_payment_photo_amt:{round(amount)}:{round(amount)}:0")
+    await message.reply_text(
+        f"💳 To'lov summasi: {amount:,.0f} so'm qabul qilindi.\n\nChekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾".replace(
+            ",", " "
+        )
+    )
+
+
 async def handle_payment_photo(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, product_key: str | None = None
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    product_key: str | None = None,
+    final_amount: float | None = None,
+    original_amount: float | None = None,
+    discount_pct: float = 0,
+    recipient_info: str | None = None,
 ) -> None:
     message = update.effective_message
     chat_id = update.effective_chat.id
@@ -1234,11 +1450,8 @@ async def handle_payment_photo(
     product = db.get_product(product_key) if product_key else None
     user = db.get_user(chat_id)
 
-    final_price = None
-    if product is not None:
-        final_price = product["price"]
-        if user and user["discount_percent"] > 0:
-            final_price = round(product["price"] * (1 - user["discount_percent"] / 100))
+    # Telegram Premium / Stars -- doim to'liq narx, chegirma qo'llanilmaydi
+    price_for_db = product["price"] if product is not None else final_amount
 
     file_id = message.photo[-1].file_id  # eng katta o'lchamdagi rasm
     payment_id = db.insert_payment(
@@ -1246,23 +1459,28 @@ async def handle_payment_photo(
         file_id,
         product_key=product["key"] if product else None,
         product_label=product["label"] if product else None,
-        product_price=final_price,
+        product_price=price_for_db,
+        recipient_info=recipient_info,
     )
 
     if product is not None:
-        if user and user["discount_percent"] > 0:
+        product_line = f"🛒 Mahsulot: {product['label']} ({product['price']:,.0f} so'm)\n".replace(",", " ")
+    elif final_amount is not None:
+        if discount_pct and discount_pct > 0 and original_amount is not None:
             product_line = (
-                f"🛒 Mahsulot: {product['label']} "
-                f"({product['price']:,.0f} so'm → {final_price:,.0f} so'm, -{user['discount_percent']:.0f}%)\n"
+                f"💳 To'lov summasi: <s>{original_amount:,.0f} so'm</s> <b>{final_amount:,.0f} so'm</b> "
+                f"(-{discount_pct:.0f}% chegirma)\n"
             ).replace(",", " ")
         else:
-            product_line = f"🛒 Mahsulot: {product['label']} ({product['price']:,.0f} so'm)\n".replace(",", " ")
+            product_line = f"💳 To'lov summasi: {final_amount:,.0f} so'm\n".replace(",", " ")
     else:
         product_line = ""
+    recipient_line = f"👤 Kimga: {html.escape(recipient_info)}\n" if recipient_info else ""
     address_line = f"📍 Manzil: {user['address']}\n" if user["address"] else ""
     caption = (
         "🧾 Yangi to'lov cheki!\n\n"
         f"{product_line}"
+        f"{recipient_line}"
         f"👤 Ism: {user['full_name']}\n"
         f"📞 Tel: {user['phone_number']}\n"
         f"{address_line}"
@@ -1277,6 +1495,7 @@ async def handle_payment_photo(
                 chat_id=admin_id,
                 photo=file_id,
                 caption=caption,
+                parse_mode="HTML",
                 reply_markup=payment_admin_keyboard(payment_id, chat_id),
             )
             db.add_payment_notification(payment_id, admin_id, sent.message_id)
@@ -1566,6 +1785,54 @@ async def handle_direct_message(
         await message.reply_text("❌ Xabar yuborilmadi -- foydalanuvchi botni bloklagan bo'lishi mumkin.")
 
 
+async def handle_admin_category_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    raw = (message.text or "").strip()
+
+    if not raw:
+        await message.reply_text("Iltimos, kategoriya nomini matn ko'rinishida yozing.")
+        return
+
+    key = slugify(raw)
+    if db.get_category(key) is not None:
+        await message.reply_text("Bunday kategoriya allaqachon mavjud. Boshqa nom kiriting:")
+        return
+
+    context.user_data["new_category_key"] = key
+    db.set_state(chat_id, "admin_waiting_category_label")
+    await message.reply_text(
+        "Endi shu kategoriya foydalanuvchilarga qanday ko'rinsin? (emoji bilan yozsangiz chiroyli bo'ladi)\n"
+        "Masalan: 💎 TON Kripta"
+    )
+
+
+async def handle_admin_category_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat_id = update.effective_chat.id
+    label = (message.text or "").strip()
+
+    if not label:
+        await message.reply_text("Iltimos, nomni matn ko'rinishida yozing.")
+        return
+
+    key = context.user_data.get("new_category_key")
+    if not key:
+        db.set_state(chat_id, None)
+        await message.reply_text("Xatolik yuz berdi, qaytadan urinib ko'ring: /addcategory")
+        return
+
+    db.create_category(key, label)
+    db.set_state(chat_id, None)
+    context.user_data.pop("new_category_key", None)
+
+    await message.reply_text(
+        f"✅ Yangi kategoriya qo'shildi: {label}\n\n"
+        "Endi shu turkumga mahsulot qo'shamizmi?",
+        reply_markup=admin_product_category_keyboard(),
+    )
+
+
 async def handle_admin_product_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat_id = update.effective_chat.id
@@ -1608,7 +1875,8 @@ async def handle_admin_product_price(update: Update, context: ContextTypes.DEFAU
     context.user_data.pop("new_product_category", None)
     context.user_data.pop("new_product_label", None)
 
-    cat_label = "💎 Premium" if category == "premium" else "⭐ Stars"
+    cat = db.get_category(category)
+    cat_label = cat["label"] if cat else category
     await message.reply_text(
         f"✅ Mahsulot qo'shildi!\n\n{cat_label}\n📝 {label}\n💰 {price:,.0f} so'm".replace(",", " ")
     )
@@ -1709,6 +1977,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer()
         await context.bot.send_message(
             chat_id=chat_id, text="Qaysi turkumga qo'shmoqchisiz?", reply_markup=admin_product_category_keyboard()
+        )
+        return
+
+    if data == "admin_addcategory":
+        if not db.is_admin(chat_id):
+            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
+            return
+
+        db.set_state(chat_id, "admin_waiting_category_key")
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Yangi kategoriya uchun ichki nom (KEY) kiriting, masalan: ton",
         )
         return
 
@@ -1939,17 +2220,18 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if data == "menu_premium":
+    if data == "menu_store":
         await query.answer()
         await context.bot.send_message(
             chat_id=chat_id,
-            text="⭐ Qaysi birini xohlaysiz?",
-            reply_markup=premium_category_keyboard(),
+            text="🛍 Qaysi birini xohlaysiz?",
+            reply_markup=store_category_keyboard(),
         )
         return
 
-    if data in ("premium_cat_premium", "premium_cat_stars"):
-        category = "premium" if data == "premium_cat_premium" else "stars"
+    if data.startswith("store_cat_"):
+        category = data.replace("store_cat_", "")
+        cat = db.get_category(category)
         products = db.get_active_products(category)
         await query.answer()
 
@@ -1957,14 +2239,48 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="Hozircha bu bo'limda mahsulotlar mavjud emas. Keyinroq qayta urinib ko'ring.",
-                reply_markup=premium_category_keyboard(),
+                reply_markup=store_category_keyboard(),
             )
             return
 
-        title = "💎 Telegram Premium tariflari:" if category == "premium" else "⭐ Telegram Stars paketlari:"
+        title = f"{cat['label'] if cat else category} tariflari:"
         await context.bot.send_message(
             chat_id=chat_id, text=title, reply_markup=product_list_keyboard(products, category)
         )
+        return
+
+    if data.startswith("apply_discount_yes:") or data.startswith("apply_discount_no:"):
+        if db.has_pending_payment(chat_id):
+            await query.answer(
+                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
+            )
+            return
+
+        payload = data.split(":", 1)[1]
+        final_s, orig_s, pct_s = payload.split(":")
+        original_amount = float(orig_s)
+
+        if data.startswith("apply_discount_yes:"):
+            final_amount = float(final_s)
+            discount_pct = float(pct_s)
+            # Chegirma bir martalik -- ishlatilgach foydalanuvchidan olib tashlaymiz
+            db.set_discount(chat_id, 0)
+            confirm_text = (
+                f"✅ Chegirma qo'llanildi!\n💳 {original_amount:,.0f} so'm → {final_amount:,.0f} so'm (-{discount_pct:.0f}%)\n\n"
+                "Endi chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
+            ).replace(",", " ")
+        else:
+            final_amount = original_amount
+            discount_pct = 0
+            confirm_text = (
+                f"💳 To'lov summasi: {original_amount:,.0f} so'm (chegirmasiz)\n\n"
+                "Chegirmangiz keyingi to'lovingiz uchun saqlanib qoladi.\n"
+                "Endi chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
+            ).replace(",", " ")
+
+        db.set_state(chat_id, f"waiting_payment_photo_amt:{round(final_amount)}:{round(original_amount)}:{discount_pct:.0f}")
+        await query.answer()
+        await context.bot.send_message(chat_id=chat_id, text=confirm_text)
         return
 
     if data.startswith("buy_product_"):
@@ -1981,27 +2297,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-        db.set_state(chat_id, f"waiting_payment_photo:{product_key}")
+        db.set_state(chat_id, f"waiting_recipient_info:{product_key}")
         await query.answer()
 
-        user = db.get_user(chat_id)
-        discount = user["discount_percent"] if user else 0
-
-        if discount > 0:
-            discounted_price = round(product["price"] * (1 - discount / 100))
-            price_line = (
-                f"Narxi: <s>{product['price']:,.0f} so'm</s> <b>{discounted_price:,.0f} so'm</b> "
-                f"(-{discount:.0f}%)"
-            ).replace(",", " ")
-        else:
-            price_line = f"Narxi: {product['price']:,.0f} so'm".replace(",", " ")
+        # Eslatma: chegirma faqat umumiy "To'lov" (veb-sayt) bo'limiga tegishli,
+        # Telegram Premium / Stars mahsulotlariga chegirma qo'llanilmaydi.
+        price_line = f"Narxi: {product['price']:,.0f} so'm".replace(",", " ")
 
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
                 f"Siz tanladingiz: {html.escape(product['label'])}\n"
                 f"{price_line}\n\n"
-                "Chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
+                "👤 Kimga? Qabul qiluvchining Telegram username'i (@...) yoki telefon raqamini yozing:"
             ),
             parse_mode="HTML",
         )
@@ -2013,14 +2321,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
             )
             return
-        db.set_state(chat_id, "waiting_payment_photo")
+        db.set_state(chat_id, "waiting_payment_amount")
         await query.answer()
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
                 "🧾 To'lov\n\n"
                 "ℹ️ Diqqat: to'lovga faqat mini web-ilova orqali berilgan buyurtmalarning cheklari qabul qilinadi.\n\n"
-                "Chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting."
+                "Avval veb-saytda qancha summaga to'lov qilgan bo'lsangiz, o'sha summani so'm ko'rinishida yozib yuboring (masalan: 150000):"
             ),
         )
 
@@ -2124,8 +2432,10 @@ def main() -> None:
     application.add_handler(CommandHandler("removebalance", remove_balance_command))
     application.add_handler(CommandHandler("addpremium", add_premium_product))
     application.add_handler(CommandHandler("addstars", add_stars_product))
+    application.add_handler(CommandHandler("addcategory", add_category_command))
     application.add_handler(CommandHandler("adddiscount", add_discount_code))
     application.add_handler(CommandHandler("setdiscount", set_discount_command))
+    application.add_handler(CommandHandler("setdiscountmin", set_discount_min_command))
     application.add_handler(CommandHandler("removeproduct", remove_product))
     application.add_handler(CommandHandler("products", list_products))
     application.add_handler(CommandHandler("addshipment", add_shipment))
