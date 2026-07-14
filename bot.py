@@ -84,7 +84,7 @@ ADMIN_WEBAPP_URL = f"{PUBLIC_BASE_URL}/app/admin.html"   # veb admin panel manzi
 HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
 HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
 
-WEBAPP_DIR = Path(__file__).parent / "webapp"
+WEBAPP_DIR = Path(__file__).parent
 
 # Yetkazib berish narxini hisoblashda ishlatiladigan standart qiymatlar
 # (admin /admin panelidan "📍 Yetkazib berish sozlamalari" orqali o'zgartira oladi).
