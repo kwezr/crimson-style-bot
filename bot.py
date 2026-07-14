@@ -1797,8 +1797,8 @@ async def main():
     db.init_db()
     await start_http_server()
     logger.info("Bot polling boshlandi...")
-    await dp.start_polling(bot, skip_updates=True) # Mana shu qatorni o'zgartiring
-
+    await bot.delete_webhook(drop_pending_updates=True)
+await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
