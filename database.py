@@ -104,6 +104,8 @@ def init_db():
                 delivery_price REAL DEFAULT 0,
                 latitude REAL,
                 longitude REAL,
+                phone TEXT DEFAULT '',
+                receipt_file_id TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -117,6 +119,10 @@ def init_db():
             cur.execute("ALTER TABLE orders ADD COLUMN latitude REAL")
         if "longitude" not in order_columns:
             cur.execute("ALTER TABLE orders ADD COLUMN longitude REAL")
+        if "phone" not in order_columns:
+            cur.execute("ALTER TABLE orders ADD COLUMN phone TEXT DEFAULT ''")
+        if "receipt_file_id" not in order_columns:
+            cur.execute("ALTER TABLE orders ADD COLUMN receipt_file_id TEXT DEFAULT ''")
 
         # --- Sozlamalar jadvali (kalit-qiymat) - do'kon joylashuvi,
         #     km narxi va boshqa sozlamalar shu yerda saqlanadi ---
@@ -300,16 +306,16 @@ def get_all_promocodes():
 
 def create_order(user_id: int, items_json: str, total_price: float,
                   promo_code: Optional[str], discount_percent: int,
-                  final_price: float) -> int:
+                  final_price: float, phone: str = "") -> int:
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO orders (user_id, items_json, total_price, promo_code,
-                                 discount_percent, final_price)
-            VALUES (?, ?, ?, ?, ?, ?)
+                                 discount_percent, final_price, phone)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, items_json, total_price, promo_code, discount_percent, final_price),
+            (user_id, items_json, total_price, promo_code, discount_percent, final_price, phone),
         )
         return cur.lastrowid
 
@@ -334,6 +340,26 @@ def get_all_orders(limit: int = 50):
         cur = conn.cursor()
         cur.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
         return [dict(row) for row in cur.fetchall()]
+
+
+def get_latest_pending_order_for_user(user_id: int) -> Optional[dict]:
+    """Mijoz rasm (chek) yuborganda, uni qaysi buyurtmaga bog'lash kerakligini
+    aniqlash uchun - eng oxirgi 'new' holatdagi buyurtmani qaytaradi."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM orders WHERE user_id = ? AND status = 'new' ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def update_order_receipt(order_id: int, file_id: str) -> bool:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE orders SET receipt_file_id = ? WHERE id = ?", (file_id, order_id))
+        return cur.rowcount > 0
 
 
 # ------------------------------------------------------------------
