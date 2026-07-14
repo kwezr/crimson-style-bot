@@ -1797,7 +1797,7 @@ async def main():
     db.init_db()
     await start_http_server()
     logger.info("Bot polling boshlandi...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=True) # Mana shu qatorni o'zgartiring
 
 
 if __name__ == "__main__":
