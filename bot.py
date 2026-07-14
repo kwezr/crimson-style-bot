@@ -1795,7 +1795,7 @@ async def start_http_server():
 
 async def main():
     db.init_db()
-    await start_http_server()
+    
     logger.info("Bot polling boshlandi...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
