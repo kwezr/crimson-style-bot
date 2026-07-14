@@ -1,1 +1,0 @@
-# crimson-style-bot
