@@ -68,7 +68,7 @@ WEBAPP_URL = f"{PUBLIC_BASE_URL}/app"          # do'kon sahifasi manzili
 HTTP_HOST = "0.0.0.0"
 HTTP_PORT = 8080
 
-WEBAPP_DIR = Path(__file__).parent⁠
+WEBAPP_DIR = Path(__file__).parent
 
 # Yetkazib berish narxini hisoblashda ishlatiladigan standart qiymatlar
 # (admin /admin panelidan "📍 Yetkazib berish sozlamalari" orqali o'zgartira oladi).
