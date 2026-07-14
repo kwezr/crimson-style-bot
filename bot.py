@@ -20,9 +20,12 @@ import hmac
 import json
 import logging
 import math
+import os
 import time
 import urllib.parse
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -46,29 +49,42 @@ from aiohttp import web
 import database as db
 
 # ------------------------------------------------------------------
-# SOZLAMALAR (o'zingizga moslab o'zgartiring)
+# SOZLAMALAR
+# Haqiqiy qiymatlar endi kod ichida emas, balki loyiha papkasidagi
+# `.env` faylida saqlanadi (bu fayl git/arxivga qo'shilmasligi kerak).
+# Namuna uchun `.env.example` faylga qarang.
 # ------------------------------------------------------------------
-BOT_TOKEN = "8896039318:AAGMbQqiTXt28s7C0FtXWBfXVWKZARyGWlM"   # @BotFather dan olingan token
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN topilmadi! `.env` faylini yarating (namuna: .env.example) "
+        "va ichiga BOT_TOKEN=... qatorini yozing."
+    )
 
 # SUPER_ADMIN_IDS - kod ichida qo'lda belgilanadigan "bosh adminlar".
 # Ular hech qachon botdan o'chirilmaydi va boshqa (oddiy) adminlarni
 # /add_admin va /remove_admin buyruqlari orqali qo'sha/o'chira oladi.
 # Oddiy adminlar esa database.py dagi "admins" jadvalida saqlanadi
 # va dinamik ravishda boshqariladi (bot qayta ishga tushirilmasa ham).
-SUPER_ADMIN_IDS = [2002780745]
+SUPER_ADMIN_IDS = [
+    int(x) for x in os.getenv("SUPER_ADMIN_IDS", "2002780745").split(",") if x.strip()
+]
 
 # Bot ishlaydigan serverning ochiq (https) manzili.
 # Telegram WebApp FAQAT https bo'lgan manzillarni qabul qiladi.
 # Lokal test uchun ngrok/cloudflared kabi tunnel ishlatishingiz kerak, masalan:
 #   ngrok http 8080
-# va natijada olingan https havolani shu yerga qo'ying.
-PUBLIC_BASE_URL = "https://your-domain-or-ngrok-url.example"
+# va natijada olingan https havolani `.env` faylidagi PUBLIC_BASE_URL ga yozing.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://your-domain-or-ngrok-url.example")
 WEBAPP_URL = f"{PUBLIC_BASE_URL}/app"          # do'kon sahifasi manzili
+ADMIN_WEBAPP_URL = f"{PUBLIC_BASE_URL}/app/admin.html"   # veb admin panel manzili
 
-HTTP_HOST = "0.0.0.0"
-HTTP_PORT = 8080
+HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
 
-WEBAPP_DIR = Path(__file__).parent
+WEBAPP_DIR = Path(__file__).parent / "webapp"
 
 # Yetkazib berish narxini hisoblashda ishlatiladigan standart qiymatlar
 # (admin /admin panelidan "📍 Yetkazib berish sozlamalari" orqali o'zgartira oladi).
@@ -339,7 +355,18 @@ def super_admin_menu_keyboard() -> InlineKeyboardMarkup:
 async def cmd_admin(message: Message):
     if not is_admin(message.from_user.id):
         return await message.answer("⛔️ Bu buyruq faqat adminlar uchun.")
-    await message.answer("🔧 <b>Admin panel</b>\nKerakli bo'limni tanlang:", reply_markup=admin_menu_keyboard())
+
+    web_panel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Veb admin panelni ochish", web_app=WebAppInfo(url=ADMIN_WEBAPP_URL))],
+        ]
+    )
+    await message.answer(
+        "🔧 <b>Admin panel</b>\nTo'liq boshqarish uchun veb-panelni oching, "
+        "yoki quyidagi bo'limlardan birini tanlang:",
+        reply_markup=web_panel_kb,
+    )
+    await message.answer("Bot ichidagi bo'limlar:", reply_markup=admin_menu_keyboard())
 
     if is_super_admin(message.from_user.id):
         await message.answer(
@@ -1096,8 +1123,11 @@ async def handle_webapp_data(message: Message):
     # process_order o'zi xaridorga tasdiqlash + to'lov kartasi xabarini yuboradi.
     try:
         await process_order(user_id=message.from_user.id, order_data=data)
-    except ValueError:
-        await message.answer("❗️ Savat bo'sh yoki mahsulotlar topilmadi.")
+    except ValueError as e:
+        if str(e) == "phone_required":
+            await message.answer("❗️ Telefon raqamingizni kiritmagansiz. Iltimos, qaytadan urinib ko'ring.")
+        else:
+            await message.answer("❗️ Savat bo'sh yoki mahsulotlar topilmadi.")
 
 
 def order_admin_keyboard(order_id: int) -> InlineKeyboardMarkup:
@@ -1109,6 +1139,43 @@ def order_admin_keyboard(order_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+# ------------------------------------------------------------------
+# TO'LOV CHEKI (screenshot) qabul qilish
+# Mijoz kartaga pul o'tkazgach, shu yerga chek/screenshot rasm qilib
+# yuboradi. Bot buni eng oxirgi "new" holatdagi buyurtmasiga bog'lab,
+# rasmni to'g'ridan-to'g'ri barcha adminlarga (tasdiqlash/bekor qilish
+# tugmalari bilan) yuboradi.
+# ------------------------------------------------------------------
+@router.message(F.photo)
+async def handle_payment_receipt(message: Message):
+    order = db.get_latest_pending_order_for_user(message.from_user.id)
+    if not order:
+        # Foydalanuvchida hech qanday kutilayotgan buyurtma yo'q -
+        # bu rasm chekka aloqasi bo'lmasligi mumkin, shuning uchun jim turamiz.
+        return
+
+    file_id = message.photo[-1].file_id
+    db.update_order_receipt(order["id"], file_id)
+
+    caption = (
+        f"🧾 <b>To'lov cheki — buyurtma #{order['id']}</b>\n"
+        f"👤 Foydalanuvchi: <a href='tg://user?id={message.from_user.id}'>{message.from_user.id}</a>\n"
+        f"💵 Summa: {order['final_price']:.0f} so'm"
+    )
+    for admin_id in get_all_admin_ids():
+        try:
+            await bot.send_photo(
+                admin_id,
+                photo=file_id,
+                caption=caption,
+                reply_markup=order_admin_keyboard(order["id"]),
+            )
+        except Exception as e:
+            logger.warning(f"Chekni adminga yuborib bo'lmadi ({admin_id}): {e}")
+
+    await message.answer("✅ Chek qabul qilindi. Operator tez orada tekshirib, buyurtmangizni tasdiqlaydi.")
 
 
 async def process_order(user_id: int, order_data: dict) -> dict:
@@ -1126,6 +1193,10 @@ async def process_order(user_id: int, order_data: dict) -> dict:
     promo_code = order_data.get("promo_code")
     if promo_code:
         promo_code = str(promo_code).strip().upper()
+
+    phone = str(order_data.get("phone") or "").strip()
+    if not phone:
+        raise ValueError("phone_required")
 
     resolved_items = []
     total_price = 0.0
@@ -1173,6 +1244,7 @@ async def process_order(user_id: int, order_data: dict) -> dict:
         promo_code=promo_code,
         discount_percent=discount_percent,
         final_price=final_price,
+        phone=phone,
     )
 
     # Xaridorga buyurtma qabul qilingani va to'lov uchun karta ma'lumotini yuboramiz
@@ -1235,6 +1307,7 @@ async def process_order(user_id: int, order_data: dict) -> dict:
     admin_text = (
         f"🆕 <b>Yangi buyurtma #{order_id}</b>\n\n"
         f"👤 Foydalanuvchi: <a href='tg://user?id={user_id}'>{user_id}</a>\n"
+        f"📞 Telefon: <code>{phone}</code>\n"
         f"🛒 Mahsulotlar:\n{items_text}\n\n"
         f"💵 Umumiy summa: {total_price:.0f} so'm"
         f"{promo_line}\n"
@@ -1256,19 +1329,44 @@ async def process_order(user_id: int, order_data: dict) -> dict:
     }
 
 
+async def apply_order_decision(order_id: int, new_status: str) -> dict:
+    """Buyurtma holatini ('confirmed' yoki 'cancelled') yangilaydi va
+    xaridorga xabar yuboradi. Ham Telegram tugmasi (callback), ham
+    veb admin panel (/api/admin/orders/{id}/confirm|cancel) shu bitta
+    funksiyani ishlatadi - shunda ikkala joyda ham xatti-harakat bir xil bo'ladi."""
+    order = db.get_order(order_id)
+    if not order:
+        raise ValueError("order_not_found")
+    if order["status"] != "new":
+        raise ValueError("already_handled")
+
+    db.update_order_status(order_id, new_status)
+
+    if new_status == "confirmed":
+        text = f"✅ Buyurtmangiz <b>#{order_id}</b> tasdiqlandi!\nTez orada operator siz bilan bog'lanadi."
+    else:
+        text = f"❌ Buyurtmangiz <b>#{order_id}</b> bekor qilindi.\nSavollar bo'lsa, operatorga yozing."
+
+    try:
+        await bot.send_message(order["user_id"], text)
+    except Exception as e:
+        logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi ({order['user_id']}): {e}")
+
+    return order
+
+
 @router.callback_query(F.data.startswith("order_ok:"))
 async def adm_confirm_order(callback):
     if not is_admin(callback.from_user.id):
         return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
 
     order_id = int(callback.data.split(":", 1)[1])
-    order = db.get_order(order_id)
-    if not order:
-        return await callback.answer("❗️ Buyurtma topilmadi", show_alert=True)
-    if order["status"] != "new":
-        return await callback.answer("Bu buyurtma allaqachon ko'rib chiqilgan.", show_alert=True)
+    try:
+        await apply_order_decision(order_id, "confirmed")
+    except ValueError as e:
+        msg = "❗️ Buyurtma topilmadi" if str(e) == "order_not_found" else "Bu buyurtma allaqachon ko'rib chiqilgan."
+        return await callback.answer(msg, show_alert=True)
 
-    db.update_order_status(order_id, "confirmed")
     try:
         await callback.message.edit_text(
             callback.message.html_text + f"\n\n✅ <b>TASDIQLANDI</b> — {callback.from_user.full_name}",
@@ -1276,14 +1374,6 @@ async def adm_confirm_order(callback):
         )
     except Exception:
         pass
-
-    try:
-        await bot.send_message(
-            order["user_id"],
-            f"✅ Buyurtmangiz <b>#{order_id}</b> tasdiqlandi!\nTez orada operator siz bilan bog'lanadi.",
-        )
-    except Exception as e:
-        logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi ({order['user_id']}): {e}")
 
     await callback.answer("Tasdiqlandi ✅")
 
@@ -1294,13 +1384,12 @@ async def adm_cancel_order(callback):
         return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
 
     order_id = int(callback.data.split(":", 1)[1])
-    order = db.get_order(order_id)
-    if not order:
-        return await callback.answer("❗️ Buyurtma topilmadi", show_alert=True)
-    if order["status"] != "new":
-        return await callback.answer("Bu buyurtma allaqachon ko'rib chiqilgan.", show_alert=True)
+    try:
+        await apply_order_decision(order_id, "cancelled")
+    except ValueError as e:
+        msg = "❗️ Buyurtma topilmadi" if str(e) == "order_not_found" else "Bu buyurtma allaqachon ko'rib chiqilgan."
+        return await callback.answer(msg, show_alert=True)
 
-    db.update_order_status(order_id, "cancelled")
     try:
         await callback.message.edit_text(
             callback.message.html_text + f"\n\n❌ <b>BEKOR QILINDI</b> — {callback.from_user.full_name}",
@@ -1308,14 +1397,6 @@ async def adm_cancel_order(callback):
         )
     except Exception:
         pass
-
-    try:
-        await bot.send_message(
-            order["user_id"],
-            f"❌ Buyurtmangiz <b>#{order_id}</b> bekor qilindi.\nSavollar bo'lsa, operatorga yozing.",
-        )
-    except Exception as e:
-        logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi ({order['user_id']}): {e}")
 
     await callback.answer("Bekor qilindi ❌")
 
@@ -1340,6 +1421,23 @@ async def api_get_products(request: web.Request):
     """WebApp ochilganda script.js shu yerdan mahsulotlar ro'yxatini oladi."""
     products = db.get_all_products(only_active=True)
     return web.json_response(products, headers=cors_headers())
+
+
+@routes.get("/api/payment-cards")
+async def api_get_payment_cards(request: web.Request):
+    """WebApp checkout paneli to'lov kartalarini shu yerdan oladi va
+    xaridorga xarid qilishdan OLDIN qaysi kartaga pul o'tkazish kerakligini
+    ko'rsatadi (bot orqali xabar yuborilishini kutmasdan)."""
+    cards = db.get_all_cards(only_active=True)
+    result = [
+        {
+            "card_number": format_card_number(c["card_number"]),
+            "holder_name": c["holder_name"],
+            "bank_name": c["bank_name"],
+        }
+        for c in cards
+    ]
+    return web.json_response(result, headers=cors_headers())
 
 
 @routes.get("/api/promocode/{code}")
@@ -1380,10 +1478,292 @@ async def api_checkout(request: web.Request):
 
     try:
         result = await process_order(user_id=user_id, order_data=body)
-    except ValueError:
-        return web.json_response({"ok": False, "error": "empty_cart"}, status=400, headers=cors_headers())
+    except ValueError as e:
+        error_code = "phone_required" if str(e) == "phone_required" else "empty_cart"
+        return web.json_response({"ok": False, "error": error_code}, status=400, headers=cors_headers())
 
     return web.json_response({"ok": True, **result}, headers=cors_headers())
+
+
+# ------------------------------------------------------------------
+# WEB ADMIN PANEL API (/api/admin/*)
+# webapp/admin.html + admin.js shu endpointlarga fetch() qiladi.
+# Har bir so'rov "X-Init-Data" headerida Telegram WebApp initData sini
+# yuboradi - shu orqali kim so'rov yuborayotgani tasdiqlanadi va
+# faqat adminlarga ruxsat beriladi.
+# ------------------------------------------------------------------
+
+def require_admin(request: web.Request):
+    """Headerdagi initData ni tekshiradi va admin bo'lmasa None qaytaradi.
+    Muvaffaqiyatli bo'lsa (user_id, is_super_admin) qaytaradi."""
+    init_data = request.headers.get("X-Init-Data", "")
+    validated = validate_init_data(init_data, BOT_TOKEN)
+    if not validated or not validated.get("user") or not validated["user"].get("id"):
+        return None
+    user_id = int(validated["user"]["id"])
+    if not is_admin(user_id):
+        return None
+    return user_id, is_super_admin(user_id)
+
+
+def admin_denied():
+    return web.json_response({"ok": False, "error": "forbidden"}, status=403, headers=cors_headers())
+
+
+@routes.get("/api/admin/check")
+async def api_admin_check(request: web.Request):
+    auth = require_admin(request)
+    if not auth:
+        return admin_denied()
+    user_id, is_super = auth
+    return web.json_response({"ok": True, "user_id": user_id, "is_super_admin": is_super}, headers=cors_headers())
+
+
+# --- Mahsulotlar ---
+@routes.get("/api/admin/products")
+async def api_admin_get_products(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    return web.json_response(db.get_all_products(only_active=False), headers=cors_headers())
+
+
+@routes.post("/api/admin/products")
+async def api_admin_add_product(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    try:
+        body = await request.json()
+        name = str(body["name"]).strip()
+        price = float(body["price"])
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+    if not name or price <= 0:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+
+    description = str(body.get("description", ""))
+    photo_url = str(body.get("photo_url", ""))
+    sizes = str(body.get("sizes", ""))
+    product_id = db.add_product(name, price, description, photo_url, sizes)
+    return web.json_response({"ok": True, "id": product_id}, headers=cors_headers())
+
+
+@routes.patch("/api/admin/products/{id}")
+async def api_admin_update_product_price(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    try:
+        product_id = int(request.match_info["id"])
+        body = await request.json()
+        new_price = float(body["price"])
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+    if new_price <= 0:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+
+    ok = db.update_product_price(product_id, new_price)
+    return web.json_response({"ok": ok}, headers=cors_headers())
+
+
+@routes.delete("/api/admin/products/{id}")
+async def api_admin_delete_product(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    product_id = int(request.match_info["id"])
+    ok = db.delete_product(product_id)
+    return web.json_response({"ok": ok}, headers=cors_headers())
+
+
+# --- Promokodlar ---
+@routes.get("/api/admin/promocodes")
+async def api_admin_get_promocodes(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    return web.json_response(db.get_all_promocodes(), headers=cors_headers())
+
+
+@routes.post("/api/admin/promocodes")
+async def api_admin_add_promocode(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    try:
+        body = await request.json()
+        code = str(body["code"]).strip().upper()
+        discount_percent = int(body["discount_percent"])
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+    if not code or not (0 < discount_percent <= 100):
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+
+    ok = db.add_promocode(code, discount_percent)
+    if not ok:
+        return web.json_response({"ok": False, "error": "already_exists"}, status=400, headers=cors_headers())
+    return web.json_response({"ok": True}, headers=cors_headers())
+
+
+@routes.delete("/api/admin/promocodes/{code}")
+async def api_admin_delete_promocode(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    code = request.match_info["code"].strip().upper()
+    ok = db.delete_promocode(code)
+    return web.json_response({"ok": ok}, headers=cors_headers())
+
+
+# --- To'lov kartalari ---
+@routes.get("/api/admin/cards")
+async def api_admin_get_cards(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    cards = db.get_all_cards(only_active=False)
+    for c in cards:
+        c["card_number_display"] = format_card_number(c["card_number"])
+    return web.json_response(cards, headers=cors_headers())
+
+
+@routes.post("/api/admin/cards")
+async def api_admin_add_card(request: web.Request):
+    auth = require_admin(request)
+    if not auth:
+        return admin_denied()
+    user_id, _ = auth
+    try:
+        body = await request.json()
+        card_number = str(body["card_number"])
+        holder_name = str(body.get("holder_name", ""))
+        bank_name = str(body.get("bank_name", ""))
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+
+    digits = "".join(ch for ch in card_number if ch.isdigit())
+    if len(digits) < 12:
+        return web.json_response({"ok": False, "error": "invalid_card_number"}, status=400, headers=cors_headers())
+
+    card_id = db.add_card(card_number, holder_name, bank_name, user_id)
+    return web.json_response({"ok": True, "id": card_id}, headers=cors_headers())
+
+
+@routes.delete("/api/admin/cards/{id}")
+async def api_admin_delete_card(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    card_id = int(request.match_info["id"])
+    ok = db.delete_card(card_id)
+    return web.json_response({"ok": ok}, headers=cors_headers())
+
+
+# --- Buyurtmalar ---
+@routes.get("/api/admin/orders")
+async def api_admin_get_orders(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    limit = int(request.query.get("limit", 50))
+    orders = db.get_all_orders(limit=limit)
+    for o in orders:
+        try:
+            o["items"] = json.loads(o["items_json"])
+        except Exception:
+            o["items"] = []
+    return web.json_response(orders, headers=cors_headers())
+
+
+@routes.post("/api/admin/orders/{id}/confirm")
+async def api_admin_confirm_order(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    order_id = int(request.match_info["id"])
+    try:
+        await apply_order_decision(order_id, "confirmed")
+    except ValueError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400, headers=cors_headers())
+    return web.json_response({"ok": True}, headers=cors_headers())
+
+
+@routes.post("/api/admin/orders/{id}/cancel")
+async def api_admin_cancel_order(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    order_id = int(request.match_info["id"])
+    try:
+        await apply_order_decision(order_id, "cancelled")
+    except ValueError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400, headers=cors_headers())
+    return web.json_response({"ok": True}, headers=cors_headers())
+
+
+# --- Yetkazib berish sozlamalari ---
+@routes.get("/api/admin/delivery")
+async def api_admin_get_delivery(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    return web.json_response({
+        "shop_lat": db.get_setting("shop_lat"),
+        "shop_lon": db.get_setting("shop_lon"),
+        "price_per_km": float(db.get_setting("price_per_km", DEFAULT_PRICE_PER_KM)),
+        "base_delivery_fee": float(db.get_setting("base_delivery_fee", DEFAULT_BASE_DELIVERY_FEE)),
+    }, headers=cors_headers())
+
+
+@routes.post("/api/admin/delivery")
+async def api_admin_set_delivery(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+
+    if "price_per_km" in body:
+        db.set_setting("price_per_km", float(body["price_per_km"]))
+    if "base_delivery_fee" in body:
+        db.set_setting("base_delivery_fee", float(body["base_delivery_fee"]))
+    if "shop_lat" in body and "shop_lon" in body:
+        db.set_setting("shop_lat", float(body["shop_lat"]))
+        db.set_setting("shop_lon", float(body["shop_lon"]))
+    return web.json_response({"ok": True}, headers=cors_headers())
+
+
+# --- Adminlar (faqat bosh adminlar boshqara oladi) ---
+@routes.get("/api/admin/admins")
+async def api_admin_get_admins(request: web.Request):
+    if not require_admin(request):
+        return admin_denied()
+    return web.json_response({
+        "super_admin_ids": SUPER_ADMIN_IDS,
+        "admins": db.get_all_admins(),
+    }, headers=cors_headers())
+
+
+@routes.post("/api/admin/admins")
+async def api_admin_add_admin(request: web.Request):
+    auth = require_admin(request)
+    if not auth:
+        return admin_denied()
+    user_id, is_super = auth
+    if not is_super:
+        return admin_denied()
+    try:
+        body = await request.json()
+        new_admin_id = int(body["user_id"])
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_data"}, status=400, headers=cors_headers())
+
+    ok = db.add_admin(new_admin_id, "", user_id)
+    return web.json_response({"ok": ok}, headers=cors_headers())
+
+
+@routes.delete("/api/admin/admins/{user_id}")
+async def api_admin_remove_admin(request: web.Request):
+    auth = require_admin(request)
+    if not auth:
+        return admin_denied()
+    _, is_super = auth
+    if not is_super:
+        return admin_denied()
+    target_id = int(request.match_info["user_id"])
+    if target_id in SUPER_ADMIN_IDS:
+        return web.json_response({"ok": False, "error": "cannot_remove_super_admin"}, status=400, headers=cors_headers())
+    ok = db.remove_admin(target_id)
+    return web.json_response({"ok": ok}, headers=cors_headers())
 
 
 @routes.options("/{tail:.*}")
