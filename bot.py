@@ -1,2451 +1,1424 @@
-"""
-bot.py
------------------------------------------------------------------
-Asosiy bot fayli. Polling rejimida ishlaydi -- hech qanday
-webhook, HTTPS yoki domen kerak emas. Shunchaki shu skriptni
-ishga tushirib qo'yasiz:
+# bot.py
+# ------------------------------------------------------------------
+# LOYIHA HAQIDA:
+# Bu fayl botning "miyasi". U 2 ta vazifani bajaradi:
+#   1) Telegram bot (aiogram 3.x) - foydalanuvchiga WebApp tugmasini
+#      ko'rsatadi, admin buyruqlarini boshqaradi (mahsulot qo'shish/
+#      o'chirish, narx o'zgartirish, promokod qo'shish/o'chirish).
+#   2) Kichik HTTP server (aiohttp) - webapp/ papkasidagi HTML/JS/CSS
+#      fayllarni brauzerga xizmat qiladi VA webapp/script.js dan
+#      fetch() orqali kelayotgan so'rovlarni (mahsulotlar ro'yxati,
+#      yangi buyurtma) qabul qiladi.
+#
+# Ikkalasi bitta asyncio jarayonida BIRGA ishlaydi (dp.start_polling
+# va aiohttp serveri asyncio.gather() bilan parallel ishga tushiriladi).
+# ------------------------------------------------------------------
 
-    python bot.py
-
-Bot doimiy ishlab turishi uchun serverda uni background jarayon
-sifatida ishga tushiring (masalan systemd, screen yoki tmux orqali).
------------------------------------------------------------------
-"""
-
-import html
+import asyncio
+import hashlib
+import hmac
+import json
 import logging
-import os
-from urllib.parse import quote, unquote
+import math
+import time
+import urllib.parse
+from pathlib import Path
 
-from telegram import (
-    InlineKeyboardButton,
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.types import (
+    Message,
+    WebAppInfo,
     InlineKeyboardMarkup,
+    InlineKeyboardButton,
     KeyboardButton,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    Update,
 )
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from aiohttp import web
 
 import database as db
-from config import BOT_TOKEN, BOT_USERNAME, MAIN_ADMIN_CHAT_ID, REFERRAL_BONUS, TRANSFER_COMMISSION_RATE
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ------------------------------------------------------------------
+# SOZLAMALAR (o'zingizga moslab o'zgartiring)
+# ------------------------------------------------------------------
+BOT_TOKEN = "8896039318:AAGMbQqiTXt28s7C0FtXWBfXVWKZARyGWlM"   # @BotFather dan olingan token
 
+# SUPER_ADMIN_IDS - kod ichida qo'lda belgilanadigan "bosh adminlar".
+# Ular hech qachon botdan o'chirilmaydi va boshqa (oddiy) adminlarni
+# /add_admin va /remove_admin buyruqlari orqali qo'sha/o'chira oladi.
+# Oddiy adminlar esa database.py dagi "admins" jadvalida saqlanadi
+# va dinamik ravishda boshqariladi (bot qayta ishga tushirilmasa ham).
+SUPER_ADMIN_IDS = [2002780745]
 
-# =======================================================================
-# Ko'p til qo'llab-quvvatlash (o'zbek / rus / ingliz)
-# Faqat asosiy foydalanuvchi oqimi tarjima qilingan; admin panel doim
-# o'zbek tilida qoladi (chunki adminlar o'zgarmaydi).
-# =======================================================================
-TEXTS = {
-    "choose_language": {
-        "uz": "Tilni tanlang / Выберите язык / Choose language:",
-        "ru": "Tilni tanlang / Выберите язык / Choose language:",
-        "en": "Tilni tanlang / Выберите язык / Choose language:",
-    },
-    "welcome_new": {
-        "uz": "Assalomu alaykum! Botimizga xush kelibsiz. 🙌\n\nRo'yxatdan o'tish uchun avval to'liq ismingizni yozib yuboring:",
-        "ru": "Здравствуйте! Добро пожаловать в наш бот. 🙌\n\nДля регистрации напишите, пожалуйста, ваше полное имя:",
-        "en": "Hello! Welcome to our bot. 🙌\n\nTo register, please send your full name:",
-    },
-    "ask_name_invalid": {
-        "uz": "Iltimos, to'g'ri ism kiriting (kamida 2 ta harf):",
-        "ru": "Пожалуйста, введите корректное имя (минимум 2 буквы):",
-        "en": "Please enter a valid name (at least 2 letters):",
-    },
-    "ask_phone": {
-        "uz": "Rahmat, {name}! Endi telefon raqamingizni pastdagi tugma orqali yuboring:",
-        "ru": "Спасибо, {name}! Теперь отправьте свой номер телефона через кнопку ниже:",
-        "en": "Thanks, {name}! Now send your phone number using the button below:",
-    },
-    "phone_button": {
-        "uz": "📱 Raqamni yuborish",
-        "ru": "📱 Отправить номер",
-        "en": "📱 Send phone number",
-    },
-    "registered_welcome": {
-        "uz": "🎉 <b>Ro'yxatdan muvaffaqiyatli o'tdingiz!</b>\n➖➖➖➖➖➖➖➖➖➖\nQuyidagi bo'limlardan birini tanlang:",
-        "ru": "🎉 <b>Вы успешно зарегистрированы!</b>\n➖➖➖➖➖➖➖➖➖➖\nВыберите один из разделов ниже:",
-        "en": "🎉 <b>You have registered successfully!</b>\n➖➖➖➖➖➖➖➖➖➖\nChoose one of the sections below:",
-    },
-    "welcome_back": {
-        "uz": "👋 Xush kelibsiz, <b>{name}</b>!\n➖➖➖➖➖➖➖➖➖➖\nQuyidagi bo'limlardan birini tanlang:",
-        "ru": "👋 Добро пожаловать, <b>{name}</b>!\n➖➖➖➖➖➖➖➖➖➖\nВыберите один из разделов ниже:",
-        "en": "👋 Welcome back, <b>{name}</b>!\n➖➖➖➖➖➖➖➖➖➖\nChoose one of the sections below:",
-    },
-    "main_menu_prompt": {
-        "uz": "✨ <b>Asosiy menyu</b>\n➖➖➖➖➖➖➖➖➖➖\nQuyidagi bo'limlardan birini tanlang 👇",
-        "ru": "✨ <b>Главное меню</b>\n➖➖➖➖➖➖➖➖➖➖\nВыберите один из разделов ниже 👇",
-        "en": "✨ <b>Main menu</b>\n➖➖➖➖➖➖➖➖➖➖\nChoose one of the sections below 👇",
-    },
-    "btn_payment": {"uz": "💰 To'lov", "ru": "💰 Оплата", "en": "💰 Payment"},
-    "btn_wallet": {"uz": "💼 Hamyon", "ru": "💼 Кошелёк", "en": "💼 Wallet"},
-    "btn_support": {"uz": "🎧 Support", "ru": "🎧 Поддержка", "en": "🎧 Support"},
-    "btn_promo": {"uz": "🎟 Promo kod", "ru": "🎟 Промокод", "en": "🎟 Promo code"},
-    "btn_transfer": {"uz": "💸 Pul o'tkazish", "ru": "💸 Перевести деньги", "en": "💸 Transfer money"},
-    "btn_premium": {"uz": "🛍 STORE", "ru": "🛍 STORE", "en": "🛍 STORE"},
-    "btn_cargo": {"uz": "📦 Yuk kuzatish", "ru": "📦 Отследить груз", "en": "📦 Track cargo"},
-    "btn_referral": {"uz": "🎁 Referal", "ru": "🎁 Реферал", "en": "🎁 Referral"},
-    "btn_orders": {"uz": "📜 Buyurtmalarim", "ru": "📜 Мои заказы", "en": "📜 My orders"},
-    "btn_language": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
-    "btn_profile": {"uz": "👤 Profil", "ru": "👤 Профиль", "en": "👤 Profile"},
-    "profile_text": {
-        "uz": "👤 <b>Sizning profilingiz</b>\n➖➖➖➖➖➖➖➖➖➖\n📝 <b>Ism:</b> {name}\n📞 <b>Telefon:</b> {phone}\n🔖 <b>Username:</b> {username}\n📍 <b>Manzil:</b> {address}\n💼 <b>Balans:</b> {balance} so'm\n🆔 <b>Wallet ID:</b> <code>{wallet_id}</code>\n🏷 <b>Chegirma:</b> {discount}%",
-        "ru": "👤 <b>Ваш профиль</b>\n➖➖➖➖➖➖➖➖➖➖\n📝 <b>Имя:</b> {name}\n📞 <b>Телефон:</b> {phone}\n🔖 <b>Имя пользователя:</b> {username}\n📍 <b>Адрес:</b> {address}\n💼 <b>Баланс:</b> {balance} сум\n🆔 <b>Wallet ID:</b> <code>{wallet_id}</code>\n🏷 <b>Скидка:</b> {discount}%",
-        "en": "👤 <b>Your profile</b>\n➖➖➖➖➖➖➖➖➖➖\n📝 <b>Name:</b> {name}\n📞 <b>Phone:</b> {phone}\n🔖 <b>Username:</b> {username}\n📍 <b>Address:</b> {address}\n💼 <b>Balance:</b> {balance} UZS\n🆔 <b>Wallet ID:</b> <code>{wallet_id}</code>\n🏷 <b>Discount:</b> {discount}%",
-    },
-    "address_not_set": {"uz": "kiritilmagan", "ru": "не указан", "en": "not set"},
-    "ask_address": {
-        "uz": "📍 Manzilingizni yozib yuboring (shahar, tuman, ko'cha, uy):",
-        "ru": "📍 Напишите ваш адрес (город, район, улица, дом):",
-        "en": "📍 Please send your address (city, district, street, house):",
-    },
-    "address_saved": {
-        "uz": "✅ Manzil saqlandi!",
-        "ru": "✅ Адрес сохранён!",
-        "en": "✅ Address saved!",
-    },
-    "btn_edit_address": {
-        "uz": "✏️ Manzilni o'zgartirish",
-        "ru": "✏️ Изменить адрес",
-        "en": "✏️ Edit address",
-    },
-    "btn_back": {"uz": "« Orqaga", "ru": "« Назад", "en": "« Back"},
-    "wallet_text": {
-        "uz": "💼 Hamyoningiz\n\nJoriy balans: {balance} so'm\n\nBalansni to'ldirish uchun \"🎟 Promo kod\" yoki \"🎁 Referal\" bo'limidan foydalaning.",
-        "ru": "💼 Ваш кошелёк\n\nТекущий баланс: {balance} сум\n\nЧтобы пополнить баланс, используйте раздел «🎟 Промокод» или «🎁 Реферал».",
-        "en": "💼 Your wallet\n\nCurrent balance: {balance} UZS\n\nTo top up, use \"🎟 Promo code\" or \"🎁 Referral\".",
-    },
-    "promo_prompt": {
-        "uz": "Promo kodni kiriting: 🎟",
-        "ru": "Введите промокод: 🎟",
-        "en": "Enter the promo code: 🎟",
-    },
-    "promo_invalid": {
-        "uz": "❌ Bunday promo kod topilmadi yoki u faol emas.",
-        "ru": "❌ Такой промокод не найден или он неактивен.",
-        "en": "❌ This promo code was not found or is inactive.",
-    },
-    "promo_used": {
-        "uz": "⚠️ Siz bu promo koddan avval foydalangansiz.",
-        "ru": "⚠️ Вы уже использовали этот промокод.",
-        "en": "⚠️ You have already used this promo code.",
-    },
-    "promo_success": {
-        "uz": "✅ Promo kod muvaffaqiyatli qo'llanildi!\n💰 Balansingizga {amount} so'm qo'shildi.\n\nJoriy balans: {balance} so'm",
-        "ru": "✅ Промокод успешно применён!\n💰 На ваш баланс зачислено {amount} сум.\n\nТекущий баланс: {balance} сум",
-        "en": "✅ Promo code applied successfully!\n💰 {amount} UZS added to your balance.\n\nCurrent balance: {balance} UZS",
-    },
-    "cancel_text": {
-        "uz": "❌ Amal bekor qilindi.",
-        "ru": "❌ Действие отменено.",
-        "en": "❌ Action cancelled.",
-    },
-    "referral_text": {
-        "uz": "🎁 <b>Do'stlaringizni taklif qiling!</b>\n➖➖➖➖➖➖➖➖➖➖\nHar bir taklif qilingan do'stingiz ro'yxatdan o'tsa, hamyoningizga <b>{bonus} so'm</b> qo'shiladi.\n\n🔗 <b>Sizning havolangiz:</b>\n{link}\n\n👥 <b>Taklif qilingan do'stlar:</b> {count}",
-        "ru": "🎁 <b>Приглашайте друзей!</b>\n➖➖➖➖➖➖➖➖➖➖\nЗа каждого друга, который зарегистрируется по вашей ссылке, на ваш кошелёк начислится <b>{bonus} сум</b>.\n\n🔗 <b>Ваша ссылка:</b>\n{link}\n\n👥 <b>Приглашено друзей:</b> {count}",
-        "en": "🎁 <b>Invite your friends!</b>\n➖➖➖➖➖➖➖➖➖➖\nFor every friend who registers using your link, <b>{bonus} UZS</b> will be added to your wallet.\n\n🔗 <b>Your link:</b>\n{link}\n\n👥 <b>Friends invited:</b> {count}",
-    },
-    "referral_bonus_notice": {
-        "uz": "🎉 Sizning havolangiz orqali yangi do'stingiz ro'yxatdan o'tdi!\n💰 Hamyoningizga {bonus} so'm qo'shildi.",
-        "ru": "🎉 По вашей ссылке зарегистрировался новый друг!\n💰 На ваш кошелёк начислено {bonus} сум.",
-        "en": "🎉 A new friend registered using your link!\n💰 {bonus} UZS added to your wallet.",
-    },
-    "orders_header": {
-        "uz": "📜 <b>Sizning buyurtmalaringiz</b>\n➖➖➖➖➖➖➖➖➖➖",
-        "ru": "📜 <b>Ваши заказы</b>\n➖➖➖➖➖➖➖➖➖➖",
-        "en": "📜 <b>Your orders</b>\n➖➖➖➖➖➖➖➖➖➖",
-    },
-    "orders_empty": {
-        "uz": "Sizda hali birorta ham buyurtma yo'q.",
-        "ru": "У вас пока нет заказов.",
-        "en": "You don't have any orders yet.",
-    },
-    "language_changed": {
-        "uz": "✅ Til o'zbekchaga o'zgartirildi.",
-        "ru": "✅ Язык изменён на русский.",
-        "en": "✅ Language changed to English.",
-    },
-}
+# Bot ishlaydigan serverning ochiq (https) manzili.
+# Telegram WebApp FAQAT https bo'lgan manzillarni qabul qiladi.
+# Lokal test uchun ngrok/cloudflared kabi tunnel ishlatishingiz kerak, masalan:
+#   ngrok http 8080
+# va natijada olingan https havolani shu yerga qo'ying.
+PUBLIC_BASE_URL = "https://your-domain-or-ngrok-url.example"
+WEBAPP_URL = f"{PUBLIC_BASE_URL}/app"          # do'kon sahifasi manzili
+
+HTTP_HOST = "0.0.0.0"
+HTTP_PORT = 8080
+
+WEBAPP_DIR = Path(__file__).parent / "webapp"
+
+# Yetkazib berish narxini hisoblashda ishlatiladigan standart qiymatlar
+# (admin /admin panelidan "📍 Yetkazib berish sozlamalari" orqali o'zgartira oladi).
+DEFAULT_PRICE_PER_KM = 3000     # 1 km uchun necha so'm
+DEFAULT_BASE_DELIVERY_FEE = 5000  # boshlang'ich (bazaviy) yetkazib berish narxi
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("shop-bot")
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
 
 
-def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in ("uz", "ru", "en") else "uz"
-    template = TEXTS.get(key, {}).get(lang) or TEXTS.get(key, {}).get("uz", key)
-    return template.format(**kwargs) if kwargs else template
+def is_super_admin(user_id: int) -> bool:
+    """Faqat kod ichida belgilangan bosh adminlar uchun True qaytaradi."""
+    return user_id in SUPER_ADMIN_IDS
 
 
-# =======================================================================
-# Umumiy klaviaturalar
-# =======================================================================
-def main_menu_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
+def is_admin(user_id: int) -> bool:
+    """Bosh admin YOKI bazada ro'yxatdan o'tgan oddiy admin bo'lsa True."""
+    return is_super_admin(user_id) or db.is_admin_in_db(user_id)
+
+
+def get_all_admin_ids() -> list:
+    """Adminlarga xabar yuborish uchun barcha admin ID larini qaytaradi
+    (super adminlar + bazadagi adminlar, takrorlanmasdan)."""
+    db_admin_ids = [a["user_id"] for a in db.get_all_admins()]
+    return list(set(SUPER_ADMIN_IDS + db_admin_ids))
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Ikki geografik nuqta orasidagi masofani km da hisoblaydi (to'g'ri chiziq bo'yicha)."""
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(d_lambda / 2) ** 2
+    return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def get_shop_location():
+    """Do'kon joylashuvini sozlamalardan o'qiydi. Sozlanmagan bo'lsa None qaytaradi."""
+    lat = db.get_setting("shop_lat")
+    lon = db.get_setting("shop_lon")
+    if lat is None or lon is None:
+        return None
+    return float(lat), float(lon)
+
+
+def compute_delivery_price(distance_km: float) -> float:
+    price_per_km = float(db.get_setting("price_per_km", DEFAULT_PRICE_PER_KM))
+    base_fee = float(db.get_setting("base_delivery_fee", DEFAULT_BASE_DELIVERY_FEE))
+    return base_fee + distance_km * price_per_km
+
+
+async def get_user_fsm_context(user_id: int) -> FSMContext:
+    """
+    Odatda FSMContext faqat handler ichida (masalan callback/message orqali)
+    olinadi. Bu yerda esa buyurtma process_order() ichida (ya'ni HTTP so'rov
+    yoki boshqa handlerdan) yaratilgani uchun, xaridorning shaxsiy holatini
+    (state) qo'lda, uning user_id si orqali ochamiz.
+    """
+    key = StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id)
+    return FSMContext(storage=dp.storage, key=key)
+
+
+def validate_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400):
+    """
+    Telegram WebApp yuborgan `initData` satrini tekshiradi (HMAC-SHA256).
+    Bu orqali foydalanuvchi ID sini brauzerdan emas, faqat Telegram
+    tomonidan imzolangan ma'lumotdan olamiz - shu bilan soxta user_id
+    yuborib buyurtma "urlash" imkoniyati yopiladi.
+    Muvaffaqiyatli bo'lsa {"user": {...}} qaytaradi, aks holda None.
+    """
+    if not init_data:
+        return None
+    try:
+        parsed = dict(urllib.parse.parse_qsl(init_data, strict_parsing=True))
+    except ValueError:
+        return None
+
+    received_hash = parsed.pop("hash", None)
+    if not received_hash:
+        return None
+
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+
+    auth_date = parsed.get("auth_date")
+    if auth_date:
+        try:
+            if time.time() - int(auth_date) > max_age_seconds:
+                return None  # eskirgan initData (masalan ilgari saqlab qolingan)
+        except ValueError:
+            pass
+
+    user = None
+    if parsed.get("user"):
+        try:
+            user = json.loads(parsed["user"])
+        except json.JSONDecodeError:
+            return None
+
+    return {"user": user}
+
+
+# ------------------------------------------------------------------
+# FSM HOLATLARI - admin ko'p bosqichli amallarni bajarganda
+# (masalan mahsulot qo'shish: avval nomini so'raymiz, keyin narxini...)
+# ------------------------------------------------------------------
+class AddProduct(StatesGroup):
+    name = State()
+    price = State()
+    sizes = State()
+    description = State()
+
+
+class DeleteProduct(StatesGroup):
+    product_id = State()
+
+
+class ChangePrice(StatesGroup):
+    product_id = State()
+    new_price = State()
+
+
+class AddPromo(StatesGroup):
+    code = State()
+    percent = State()
+
+
+class DeletePromo(StatesGroup):
+    code = State()
+
+
+class AddAdmin(StatesGroup):
+    user_id = State()
+
+
+class RemoveAdmin(StatesGroup):
+    user_id = State()
+
+
+class AddCard(StatesGroup):
+    card_number = State()
+    holder_name = State()
+    bank_name = State()
+
+
+class DeleteCard(StatesGroup):
+    card_id = State()
+
+
+class WaitingDeliveryLocation(StatesGroup):
+    """Xaridor 'Sotib olish'dan keyin manzilini yuborishini kutamiz."""
+    order_id = State()
+
+
+class SetShopLocation(StatesGroup):
+    """Admin do'konning joylashuvi va yetkazib berish narxlarini sozlaydi."""
+    location = State()
+    price_per_km = State()
+    base_fee = State()
+
+
+def format_card_number(digits: str) -> str:
+    """8600123456789012 -> 8600 1234 5678 9012"""
+    digits = "".join(ch for ch in str(digits) if ch.isdigit())
+    return " ".join(digits[i:i + 4] for i in range(0, len(digits), 4))
+
+
+# ------------------------------------------------------------------
+# ODDIY FOYDALANUVCHI BUYRUQLARI
+# ------------------------------------------------------------------
+
+@router.message(CommandStart())
+async def cmd_start(message: Message):
+    """
+    /start bosilganda foydalanuvchini bazaga yozamiz va
+    do'konni ochadigan WebApp tugmasini ko'rsatamiz.
+    """
+    db.add_or_update_user(
+        user_id=message.from_user.id,
+        username=message.from_user.username or "",
+        full_name=message.from_user.full_name or "",
+    )
+
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🛍 Do'konni ochish", web_app=WebAppInfo(url=WEBAPP_URL))]
+        ],
+        resize_keyboard=True,
+    )
+
+    await message.answer(
+        "Assalomu alaykum! 👋\n\n"
+        "Bizning onlayn do'konimizga xush kelibsiz.\n"
+        "Quyidagi tugma orqali mahsulotlarni ko'rib, buyurtma bering.",
+        reply_markup=keyboard,
+    )
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    text = (
+        "ℹ️ <b>Yordam</b>\n\n"
+        "/start - do'konni ochish\n"
+    )
+    if is_admin(message.from_user.id):
+        text += (
+            "\n<b>Admin buyruqlari:</b>\n"
+            "/admin - admin panelni ochish\n"
+            "/products - barcha mahsulotlar ro'yxati\n"
+            "/orders - so'nggi buyurtmalar\n"
+            "/promos - promokodlar ro'yxati\n"
+            "/cards - to'lov kartalari ro'yxati\n"
+            "/delivery - yetkazib berish sozlamalari\n"
+            "/admins - adminlar ro'yxati\n"
+        )
+        if is_super_admin(message.from_user.id):
+            text += (
+                "\n<b>Bosh admin buyruqlari:</b>\n"
+                "/add_admin USER_ID - yangi admin qo'shish\n"
+                "/remove_admin USER_ID - adminni o'chirish\n"
+            )
+    await message.answer(text)
+
+
+# ------------------------------------------------------------------
+# ADMIN PANEL - asosiy menyu (inline tugmalar)
+# ------------------------------------------------------------------
+
+def admin_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(t(lang, "btn_payment"), callback_data="menu_payment"),
-                InlineKeyboardButton(t(lang, "btn_support"), callback_data="menu_support"),
-            ],
-            [
-                InlineKeyboardButton(t(lang, "btn_premium"), callback_data="menu_store"),
-                InlineKeyboardButton(t(lang, "btn_cargo"), callback_data="menu_cargo"),
-            ],
-            [
-                InlineKeyboardButton(t(lang, "btn_referral"), callback_data="menu_referral"),
-                InlineKeyboardButton(t(lang, "btn_orders"), callback_data="menu_orders"),
-            ],
-            [
-                InlineKeyboardButton(t(lang, "btn_profile"), callback_data="menu_profile"),
-                InlineKeyboardButton(t(lang, "btn_language"), callback_data="menu_language"),
-            ],
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Mahsulot qo'shish", callback_data="adm_add_product")],
+            [InlineKeyboardButton(text="🗑 Mahsulot o'chirish", callback_data="adm_del_product")],
+            [InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data="adm_price")],
+            [InlineKeyboardButton(text="🏷 Promokod qo'shish", callback_data="adm_add_promo")],
+            [InlineKeyboardButton(text="❌ Promokod o'chirish", callback_data="adm_del_promo")],
+            [InlineKeyboardButton(text="💳 Karta qo'shish", callback_data="adm_add_card")],
+            [InlineKeyboardButton(text="🗑 Kartani o'chirish", callback_data="adm_del_card")],
+            [InlineKeyboardButton(text="📍 Yetkazib berish sozlamalari", callback_data="adm_delivery_settings")],
+            [InlineKeyboardButton(text="📋 Mahsulotlar ro'yxati", callback_data="adm_list_products")],
+            [InlineKeyboardButton(text="📦 Buyurtmalar", callback_data="adm_list_orders")],
+            [InlineKeyboardButton(text="👤 Adminlar ro'yxati", callback_data="adm_list_admins")],
         ]
     )
 
 
-def language_keyboard() -> InlineKeyboardMarkup:
+def super_admin_menu_keyboard() -> InlineKeyboardMarkup:
+    """Faqat bosh adminlarga ko'rinadigan qo'shimcha bo'lim."""
     return InlineKeyboardMarkup(
-        [
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Admin qo'shish", callback_data="adm_add_admin")],
+            [InlineKeyboardButton(text="🚫 Admin o'chirish", callback_data="adm_remove_admin")],
+        ]
+    )
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if not is_admin(message.from_user.id):
+        return await message.answer("⛔️ Bu buyruq faqat adminlar uchun.")
+    await message.answer("🔧 <b>Admin panel</b>\nKerakli bo'limni tanlang:", reply_markup=admin_menu_keyboard())
+
+    if is_super_admin(message.from_user.id):
+        await message.answer(
+            "👑 <b>Bosh admin bo'limi</b>\nAdminlarni shu yerdan boshqaring:",
+            reply_markup=super_admin_menu_keyboard(),
+        )
+
+
+# --- Callback: mahsulot qo'shish jarayonini boshlash ---
+@router.callback_query(F.data == "adm_add_product")
+async def adm_add_product_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    await state.set_state(AddProduct.name)
+    await callback.message.answer("Yangi mahsulot nomini kiriting:")
+    await callback.answer()
+
+
+@router.message(StateFilter(AddProduct.name))
+async def adm_add_product_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await state.set_state(AddProduct.price)
+    await message.answer("Endi narxini kiriting (faqat son, masalan 150000):")
+
+
+@router.message(StateFilter(AddProduct.price))
+async def adm_add_product_price(message: Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", ".").strip())
+    except ValueError:
+        return await message.answer("❗️ Narxni faqat son ko'rinishida kiriting. Qayta urinib ko'ring:")
+    await state.update_data(price=price)
+    await state.set_state(AddProduct.sizes)
+    await message.answer(
+        "Razmerlarini kiriting, vergul bilan ajratib:\n"
+        "• Kiyim uchun: <code>S,M,L,XL</code>\n"
+        "• Oyoq kiyim uchun: <code>40,41,42,43,44</code>\n\n"
+        "Agar bu mahsulotda razmer bo'lmasa — <code>-</code> deb yozing."
+    )
+
+
+@router.message(StateFilter(AddProduct.sizes))
+async def adm_add_product_sizes(message: Message, state: FSMContext):
+    raw = message.text.strip()
+    if raw == "-":
+        sizes = ""
+    else:
+        # foydalanuvchi kiritgan qiymatlarni tozalab, vergul bilan qayta yig'amiz
+        parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
+        sizes = ",".join(parts)
+
+    await state.update_data(sizes=sizes)
+    await state.set_state(AddProduct.description)
+    await message.answer("Mahsulot haqida to'liq tavsilot (tavsif) kiriting (yoki '-' deb yozing, o'tkazib yuborish uchun):")
+
+
+@router.message(StateFilter(AddProduct.description))
+async def adm_add_product_description(message: Message, state: FSMContext):
+    data = await state.get_data()
+    description = "" if message.text.strip() == "-" else message.text.strip()
+
+    product_id = db.add_product(
+        name=data["name"],
+        price=data["price"],
+        description=description,
+        sizes=data.get("sizes", ""),
+    )
+    await state.clear()
+
+    sizes_line = f"\n📏 Razmerlar: {data['sizes']}" if data.get("sizes") else ""
+    await message.answer(
+        f"✅ Mahsulot qo'shildi!\n\n"
+        f"🆔 ID: {product_id}\n"
+        f"📦 Nomi: {data['name']}\n"
+        f"💰 Narxi: {data['price']:.0f} so'm"
+        f"{sizes_line}"
+    )
+
+
+# --- Callback: mahsulot o'chirish ---
+@router.callback_query(F.data == "adm_del_product")
+async def adm_del_product_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    products = db.get_all_products(only_active=False)
+    if not products:
+        await callback.message.answer("Hozircha mahsulotlar mavjud emas.")
+        return await callback.answer()
+
+    text = "🗑 O'chirmoqchi bo'lgan mahsulot ID sini yuboring:\n\n"
+    for p in products:
+        text += f"#{p['id']} — {p['name']} — {p['price']:.0f} so'm\n"
+
+    await state.set_state(DeleteProduct.product_id)
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.message(StateFilter(DeleteProduct.product_id))
+async def adm_del_product_finish(message: Message, state: FSMContext):
+    try:
+        product_id = int(message.text.strip())
+    except ValueError:
+        return await message.answer("❗️ Faqat mahsulot ID raqamini yuboring:")
+
+    ok = db.delete_product(product_id)
+    await state.clear()
+    if ok:
+        await message.answer(f"✅ #{product_id} mahsulot o'chirildi.")
+    else:
+        await message.answer("❗️ Bunday ID topilmadi.")
+
+
+# --- Callback: narxni o'zgartirish ---
+@router.callback_query(F.data == "adm_price")
+async def adm_price_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    products = db.get_all_products(only_active=False)
+    if not products:
+        await callback.message.answer("Hozircha mahsulotlar mavjud emas.")
+        return await callback.answer()
+
+    text = "💰 Narxini o'zgartirmoqchi bo'lgan mahsulot ID sini yuboring:\n\n"
+    for p in products:
+        text += f"#{p['id']} — {p['name']} — {p['price']:.0f} so'm\n"
+
+    await state.set_state(ChangePrice.product_id)
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.message(StateFilter(ChangePrice.product_id))
+async def adm_price_get_id(message: Message, state: FSMContext):
+    try:
+        product_id = int(message.text.strip())
+    except ValueError:
+        return await message.answer("❗️ Faqat ID raqamini yuboring:")
+
+    product = db.get_product_by_id(product_id)
+    if not product:
+        return await message.answer("❗️ Bunday ID topilmadi. Qayta urinib ko'ring:")
+
+    await state.update_data(product_id=product_id)
+    await state.set_state(ChangePrice.new_price)
+    await message.answer(f"'{product['name']}' uchun yangi narxni kiriting:")
+
+
+@router.message(StateFilter(ChangePrice.new_price))
+async def adm_price_finish(message: Message, state: FSMContext):
+    try:
+        new_price = float(message.text.replace(",", ".").strip())
+    except ValueError:
+        return await message.answer("❗️ Narxni faqat son ko'rinishida kiriting:")
+
+    data = await state.get_data()
+    db.update_product_price(data["product_id"], new_price)
+    await state.clear()
+    await message.answer(f"✅ Narx yangilandi: {new_price:.0f} so'm")
+
+
+# --- Callback: promokod qo'shish ---
+@router.callback_query(F.data == "adm_add_promo")
+async def adm_add_promo_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    await state.set_state(AddPromo.code)
+    await callback.message.answer("Yangi promokod matnini kiriting (masalan SALE20):")
+    await callback.answer()
+
+
+@router.message(StateFilter(AddPromo.code))
+async def adm_add_promo_code(message: Message, state: FSMContext):
+    await state.update_data(code=message.text.strip().upper())
+    await state.set_state(AddPromo.percent)
+    await message.answer("Chegirma foizini kiriting (masalan 20):")
+
+
+@router.message(StateFilter(AddPromo.percent))
+async def adm_add_promo_percent(message: Message, state: FSMContext):
+    try:
+        percent = int(message.text.strip())
+        if not (0 < percent <= 100):
+            raise ValueError
+    except ValueError:
+        return await message.answer("❗️ Foizni 1 dan 100 gacha son ko'rinishida kiriting:")
+
+    data = await state.get_data()
+    ok = db.add_promocode(data["code"], percent)
+    await state.clear()
+    if ok:
+        await message.answer(f"✅ Promokod qo'shildi: {data['code']} — {percent}% chegirma")
+    else:
+        await message.answer("❗️ Bunday promokod allaqachon mavjud.")
+
+
+# --- Callback: promokod o'chirish ---
+@router.callback_query(F.data == "adm_del_promo")
+async def adm_del_promo_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    promos = db.get_all_promocodes()
+    if not promos:
+        await callback.message.answer("Hozircha promokodlar mavjud emas.")
+        return await callback.answer()
+
+    text = "❌ O'chirmoqchi bo'lgan promokodni yuboring:\n\n"
+    for p in promos:
+        text += f"{p['code']} — {p['discount_percent']}%\n"
+
+    await state.set_state(DeletePromo.code)
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.message(StateFilter(DeletePromo.code))
+async def adm_del_promo_finish(message: Message, state: FSMContext):
+    code = message.text.strip().upper()
+    ok = db.delete_promocode(code)
+    await state.clear()
+    if ok:
+        await message.answer(f"✅ {code} promokodi o'chirildi.")
+    else:
+        await message.answer("❗️ Bunday promokod topilmadi.")
+
+
+# --- Callback: to'lov kartasi qo'shish ---
+@router.callback_query(F.data == "adm_add_card")
+async def adm_add_card_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    await state.set_state(AddCard.card_number)
+    await callback.message.answer(
+        "💳 Karta raqamini kiriting (bo'sh joy yoki chiziqchalar bilan ham bo'ladi):\n"
+        "masalan: <code>8600 1234 5678 9012</code>"
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(AddCard.card_number))
+async def adm_add_card_number(message: Message, state: FSMContext):
+    digits = "".join(ch for ch in message.text if ch.isdigit())
+    if len(digits) < 12:
+        return await message.answer("❗️ Karta raqami noto'g'ri ko'rinishda. Qayta kiriting:")
+    await state.update_data(card_number=digits)
+    await state.set_state(AddCard.holder_name)
+    await message.answer("Karta egasining F.I.Sh sini kiriting (yoki '-' deb yozing, o'tkazib yuborish uchun):")
+
+
+@router.message(StateFilter(AddCard.holder_name))
+async def adm_add_card_holder(message: Message, state: FSMContext):
+    holder_name = "" if message.text.strip() == "-" else message.text.strip()
+    await state.update_data(holder_name=holder_name)
+    await state.set_state(AddCard.bank_name)
+    await message.answer("Bank nomini kiriting (yoki '-' deb yozing, o'tkazib yuborish uchun):")
+
+
+@router.message(StateFilter(AddCard.bank_name))
+async def adm_add_card_bank(message: Message, state: FSMContext):
+    bank_name = "" if message.text.strip() == "-" else message.text.strip()
+    data = await state.get_data()
+
+    card_id = db.add_card(
+        card_number=data["card_number"],
+        holder_name=data.get("holder_name", ""),
+        bank_name=bank_name,
+        added_by=message.from_user.id,
+    )
+    await state.clear()
+
+    await message.answer(
+        f"✅ Karta qo'shildi!\n\n"
+        f"💳 <code>{format_card_number(data['card_number'])}</code>\n"
+        f"{data.get('holder_name', '') or '—'}"
+        f"{(' • ' + bank_name) if bank_name else ''}\n\n"
+        f"Bu karta endi buyurtma qabul qilingan xaridorlarga avtomatik ko'rsatiladi."
+    )
+
+
+# --- Callback: to'lov kartasini o'chirish ---
+@router.callback_query(F.data == "adm_del_card")
+async def adm_del_card_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    cards = db.get_all_cards(only_active=False)
+    if not cards:
+        await callback.message.answer("Hozircha kartalar qo'shilmagan.")
+        return await callback.answer()
+
+    text = "🗑 O'chirmoqchi bo'lgan karta ID sini yuboring:\n\n"
+    for c in cards:
+        label = " • ".join(filter(None, [c["holder_name"], c["bank_name"]]))
+        text += f"#{c['id']} — {format_card_number(c['card_number'])}" + (f" ({label})" if label else "") + "\n"
+
+    await state.set_state(DeleteCard.card_id)
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.message(StateFilter(DeleteCard.card_id))
+async def adm_del_card_finish(message: Message, state: FSMContext):
+    try:
+        card_id = int(message.text.strip())
+    except ValueError:
+        return await message.answer("❗️ Faqat karta ID raqamini yuboring:")
+
+    ok = db.delete_card(card_id)
+    await state.clear()
+    if ok:
+        await message.answer(f"✅ #{card_id} karta o'chirildi.")
+    else:
+        await message.answer("❗️ Bunday ID topilmadi.")
+
+
+@router.message(Command("cards"))
+async def cmd_cards(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    cards = db.get_all_cards(only_active=False)
+    if not cards:
+        return await message.answer("Hozircha kartalar qo'shilmagan.")
+    text = "💳 <b>To'lov kartalari:</b>\n\n"
+    for c in cards:
+        label = " • ".join(filter(None, [c["holder_name"], c["bank_name"]]))
+        status = "faol ✅" if c["is_active"] else "faol emas ❌"
+        text += f"#{c['id']} — <code>{format_card_number(c['card_number'])}</code>" + (f" ({label})" if label else "") + f" — {status}\n"
+    await message.answer(text)
+
+
+# ------------------------------------------------------------------
+# YETKAZIB BERISH SOZLAMALARI (admin do'kon joylashuvi + km narxini kiritadi)
+# ------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm_delivery_settings")
+async def adm_delivery_settings_start(callback, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    await state.set_state(SetShopLocation.location)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📍 Do'kon joylashuvini yuborish", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await callback.message.answer(
+        "📍 Do'konning joylashuvini yuboring (pastdagi tugma orqali, yoki 📎 → Location):\n"
+        "Shu nuqtadan xaridorgacha bo'lgan masofa shu yerdan hisoblanadi.",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(SetShopLocation.location), F.location)
+async def adm_delivery_settings_location(message: Message, state: FSMContext):
+    db.set_setting("shop_lat", message.location.latitude)
+    db.set_setting("shop_lon", message.location.longitude)
+    await state.set_state(SetShopLocation.price_per_km)
+    current = float(db.get_setting("price_per_km", DEFAULT_PRICE_PER_KM))
+    await message.answer(
+        f"✅ Do'kon joylashuvi saqlandi.\n\n"
+        f"Endi 1 km uchun necha so'm olishni kiriting (hozirgi: {current:.0f} so'm):",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@router.message(StateFilter(SetShopLocation.location))
+async def adm_delivery_settings_location_invalid(message: Message):
+    await message.answer("❗️ Iltimos, pastdagi tugma yoki 📎 → Location orqali joylashuv yuboring:")
+
+
+@router.message(StateFilter(SetShopLocation.price_per_km))
+async def adm_delivery_settings_price(message: Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", ".").strip())
+        if price < 0:
+            raise ValueError
+    except ValueError:
+        return await message.answer("❗️ Faqat musbat son kiriting:")
+
+    await state.update_data(price_per_km=price)
+    await state.set_state(SetShopLocation.base_fee)
+    current = float(db.get_setting("base_delivery_fee", DEFAULT_BASE_DELIVERY_FEE))
+    await message.answer(f"Endi bazaviy (boshlang'ich) yetkazib berish narxini kiriting (hozirgi: {current:.0f} so'm):")
+
+
+@router.message(StateFilter(SetShopLocation.base_fee))
+async def adm_delivery_settings_base_fee(message: Message, state: FSMContext):
+    try:
+        base_fee = float(message.text.replace(",", ".").strip())
+        if base_fee < 0:
+            raise ValueError
+    except ValueError:
+        return await message.answer("❗️ Faqat musbat son kiriting:")
+
+    data = await state.get_data()
+    price_per_km = data["price_per_km"]
+    db.set_setting("price_per_km", price_per_km)
+    db.set_setting("base_delivery_fee", base_fee)
+    await state.clear()
+
+    example_5km = base_fee + price_per_km * 5
+    await message.answer(
+        f"✅ Yetkazib berish sozlamalari saqlandi!\n\n"
+        f"📏 1 km: {price_per_km:.0f} so'm\n"
+        f"🏁 Bazaviy narx: {base_fee:.0f} so'm\n\n"
+        f"Masalan, 5 km masofa uchun: {example_5km:.0f} so'm"
+    )
+
+
+@router.message(Command("delivery"))
+async def cmd_delivery(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    shop_loc = get_shop_location()
+    price_per_km = float(db.get_setting("price_per_km", DEFAULT_PRICE_PER_KM))
+    base_fee = float(db.get_setting("base_delivery_fee", DEFAULT_BASE_DELIVERY_FEE))
+    loc_line = f"📍 {shop_loc[0]:.5f}, {shop_loc[1]:.5f}" if shop_loc else "📍 Hali sozlanmagan"
+    await message.answer(
+        f"🚚 <b>Yetkazib berish sozlamalari</b>\n\n"
+        f"{loc_line}\n"
+        f"📏 1 km: {price_per_km:.0f} so'm\n"
+        f"🏁 Bazaviy narx: {base_fee:.0f} so'm\n\n"
+        f"O'zgartirish uchun: /admin → 📍 Yetkazib berish sozlamalari"
+    )
+
+
+# --- Callback: mahsulotlar ro'yxati / buyurtmalar ---
+@router.callback_query(F.data == "adm_list_products")
+async def adm_list_products(callback):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    products = db.get_all_products(only_active=False)
+    if not products:
+        text = "Hozircha mahsulotlar yo'q."
+    else:
+        text = "📋 <b>Mahsulotlar:</b>\n\n"
+        for p in products:
+            text += f"#{p['id']} — {p['name']} — {p['price']:.0f} so'm\n"
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_list_orders")
+async def adm_list_orders(callback):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    orders = db.get_all_orders(limit=20)
+    if not orders:
+        text = "Hozircha buyurtmalar yo'q."
+    else:
+        text = "📦 <b>So'nggi buyurtmalar:</b>\n\n"
+        for o in orders:
+            delivery_line = f" +{o['delivery_price']:.0f} yetkazish" if o["delivery_price"] else ""
+            text += (
+                f"#{o['id']} — user {o['user_id']} — "
+                f"{o['final_price']:.0f} so'm{delivery_line} ({o['status']})\n"
+            )
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+# --- Callback: adminlar ro'yxatini ko'rsatish ---
+@router.callback_query(F.data == "adm_list_admins")
+async def adm_list_admins(callback):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+    await callback.message.answer(build_admins_list_text())
+    await callback.answer()
+
+
+def build_admins_list_text() -> str:
+    text = "👑 <b>Bosh adminlar</b> (kod orqali belgilangan):\n"
+    for uid in SUPER_ADMIN_IDS:
+        text += f"  • <code>{uid}</code>\n"
+
+    db_admins = db.get_all_admins()
+    text += "\n👤 <b>Qo'shimcha adminlar</b>:\n"
+    if not db_admins:
+        text += "  (hozircha yo'q)\n"
+    else:
+        for a in db_admins:
+            uname = f"@{a['username']}" if a["username"] else ""
+            text += f"  • <code>{a['user_id']}</code> {uname}\n"
+    return text
+
+
+# --- Callback: yangi admin qo'shish (faqat bosh adminlar uchun) ---
+@router.callback_query(F.data == "adm_add_admin")
+async def adm_add_admin_start(callback, state: FSMContext):
+    if not is_super_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Bu bo'lim faqat bosh adminlar uchun", show_alert=True)
+    await state.set_state(AddAdmin.user_id)
+    await callback.message.answer(
+        "Yangi admin qilib tayinlamoqchi bo'lgan foydalanuvchining "
+        "Telegram user_id raqamini yuboring.\n\n"
+        "💡 User ID ni bilish uchun foydalanuvchi @userinfobot ga /start yuborishi mumkin."
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(AddAdmin.user_id))
+async def adm_add_admin_finish(message: Message, state: FSMContext):
+    try:
+        new_admin_id = int(message.text.strip())
+    except ValueError:
+        return await message.answer("❗️ Faqat son (user_id) yuboring:")
+
+    await state.clear()
+
+    if is_admin(new_admin_id):
+        return await message.answer("❗️ Bu foydalanuvchi allaqachon admin.")
+
+    ok = db.add_admin(user_id=new_admin_id, username="", added_by=message.from_user.id)
+    if ok:
+        await message.answer(f"✅ Yangi admin qo'shildi: <code>{new_admin_id}</code>")
+        try:
+            await bot.send_message(
+                new_admin_id,
+                "🎉 Tabriklaymiz! Sizga ushbu do'kon botida admin huquqi berildi.\n"
+                "/admin buyrug'i orqali admin panelni oching.",
+            )
+        except Exception as e:
+            logger.warning(f"Yangi adminga xabar yuborib bo'lmadi: {e}")
+    else:
+        await message.answer("❗️ Xatolik: bu foydalanuvchi bazada allaqachon mavjud.")
+
+
+# --- Callback: adminni o'chirish (faqat bosh adminlar uchun) ---
+@router.callback_query(F.data == "adm_remove_admin")
+async def adm_remove_admin_start(callback, state: FSMContext):
+    if not is_super_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Bu bo'lim faqat bosh adminlar uchun", show_alert=True)
+
+    db_admins = db.get_all_admins()
+    if not db_admins:
+        await callback.message.answer("Hozircha o'chirish mumkin bo'lgan (qo'shimcha) adminlar yo'q.")
+        return await callback.answer()
+
+    text = "🚫 O'chirmoqchi bo'lgan adminning user_id sini yuboring:\n\n"
+    for a in db_admins:
+        uname = f"@{a['username']}" if a["username"] else ""
+        text += f"  • <code>{a['user_id']}</code> {uname}\n"
+
+    await state.set_state(RemoveAdmin.user_id)
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.message(StateFilter(RemoveAdmin.user_id))
+async def adm_remove_admin_finish(message: Message, state: FSMContext):
+    try:
+        target_id = int(message.text.strip())
+    except ValueError:
+        return await message.answer("❗️ Faqat son (user_id) yuboring:")
+
+    await state.clear()
+
+    if target_id in SUPER_ADMIN_IDS:
+        return await message.answer("❗️ Bosh adminni bu yerdan o'chirib bo'lmaydi (kod orqali belgilangan).")
+
+    ok = db.remove_admin(target_id)
+    if ok:
+        await message.answer(f"✅ Admin o'chirildi: <code>{target_id}</code>")
+    else:
+        await message.answer("❗️ Bunday admin bazada topilmadi.")
+
+
+# --- Matnli buyruqlar: /add_admin, /remove_admin, /admins (bosh adminlar uchun tezkor yo'l) ---
+@router.message(Command("add_admin"))
+async def cmd_add_admin(message: Message):
+    if not is_super_admin(message.from_user.id):
+        return await message.answer("⛔️ Bu buyruq faqat bosh adminlar uchun.")
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip().isdigit():
+        return await message.answer("Foydalanish: <code>/add_admin USER_ID</code>")
+
+    new_admin_id = int(args[1].strip())
+    if is_admin(new_admin_id):
+        return await message.answer("❗️ Bu foydalanuvchi allaqachon admin.")
+
+    ok = db.add_admin(user_id=new_admin_id, username="", added_by=message.from_user.id)
+    if ok:
+        await message.answer(f"✅ Yangi admin qo'shildi: <code>{new_admin_id}</code>")
+    else:
+        await message.answer("❗️ Xatolik yuz berdi.")
+
+
+@router.message(Command("remove_admin"))
+async def cmd_remove_admin(message: Message):
+    if not is_super_admin(message.from_user.id):
+        return await message.answer("⛔️ Bu buyruq faqat bosh adminlar uchun.")
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip().isdigit():
+        return await message.answer("Foydalanish: <code>/remove_admin USER_ID</code>")
+
+    target_id = int(args[1].strip())
+    if target_id in SUPER_ADMIN_IDS:
+        return await message.answer("❗️ Bosh adminni o'chirib bo'lmaydi.")
+
+    ok = db.remove_admin(target_id)
+    if ok:
+        await message.answer(f"✅ Admin o'chirildi: <code>{target_id}</code>")
+    else:
+        await message.answer("❗️ Bunday admin topilmadi.")
+
+
+@router.message(Command("admins"))
+async def cmd_admins(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(build_admins_list_text())
+
+
+# Tezkor matnli buyruqlar (admin panelsiz ham ishlatish uchun)
+@router.message(Command("products"))
+async def cmd_products(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await adm_list_products_text(message)
+
+
+async def adm_list_products_text(message: Message):
+    products = db.get_all_products(only_active=False)
+    if not products:
+        return await message.answer("Hozircha mahsulotlar yo'q.")
+    text = "📋 <b>Mahsulotlar:</b>\n\n"
+    for p in products:
+        text += f"#{p['id']} — {p['name']} — {p['price']:.0f} so'm\n"
+    await message.answer(text)
+
+
+@router.message(Command("orders"))
+async def cmd_orders(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    orders = db.get_all_orders(limit=20)
+    if not orders:
+        return await message.answer("Hozircha buyurtmalar yo'q.")
+    text = "📦 <b>So'nggi buyurtmalar:</b>\n\n"
+    for o in orders:
+        delivery_line = f" +{o['delivery_price']:.0f} yetkazish" if o["delivery_price"] else ""
+        text += f"#{o['id']} — user {o['user_id']} — {o['final_price']:.0f} so'm{delivery_line} ({o['status']})\n"
+    await message.answer(text)
+
+
+@router.message(Command("promos"))
+async def cmd_promos(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    promos = db.get_all_promocodes()
+    if not promos:
+        return await message.answer("Hozircha promokodlar yo'q.")
+    text = "🏷 <b>Promokodlar:</b>\n\n"
+    for p in promos:
+        status = "faol ✅" if p["is_active"] else "faol emas ❌"
+        text += f"{p['code']} — {p['discount_percent']}% ({status})\n"
+    await message.answer(text)
+
+
+# ------------------------------------------------------------------
+# XARIDORDAN YETKAZIB BERISH MANZILINI QABUL QILISH
+# (buyurtma qabul qilingandan keyin process_order shu holatni yoqadi)
+# ------------------------------------------------------------------
+
+@router.message(StateFilter(WaitingDeliveryLocation.order_id), F.location)
+async def handle_delivery_location(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    await state.clear()
+
+    order = db.get_order(order_id)
+    if not order:
+        return await message.answer("❗️ Buyurtma topilmadi.", reply_markup=ReplyKeyboardRemove())
+
+    lat, lon = message.location.latitude, message.location.longitude
+    shop_loc = get_shop_location()
+    distance_line = ""
+
+    if shop_loc:
+        distance_km = haversine_km(shop_loc[0], shop_loc[1], lat, lon)
+        delivery_price = compute_delivery_price(distance_km)
+        db.update_order_delivery(order_id, lat, lon, delivery_price)
+        total_with_delivery = order["final_price"] + delivery_price
+        await message.answer(
+            f"🚚 Yetkazib berish: <b>{delivery_price:.0f} so'm</b> (~{distance_km:.1f} km)\n"
+            f"💵 Umumiy to'lov (mahsulot + yetkazish): <b>{total_with_delivery:.0f} so'm</b>",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        distance_line = f"📏 Masofa: {distance_km:.1f} km\n🚚 Yetkazib berish: {delivery_price:.0f} so'm\n"
+    else:
+        db.update_order_delivery(order_id, lat, lon, 0)
+        await message.answer(
+            "✅ Manzilingiz qabul qilindi. Operator yetkazib berish narxini alohida aytadi.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+    # Manzilni adminga tabiiy Telegram xaritasi + Google Maps havolasi bilan yuboramiz
+    maps_link = f"https://maps.google.com/?q={lat},{lon}"
+    admin_text = (
+        f"📍 <b>Buyurtma #{order_id}</b> uchun manzil yuborildi\n"
+        f"👤 <a href='tg://user?id={message.from_user.id}'>{message.from_user.id}</a>\n"
+        f"{distance_line}"
+        f"🗺 <a href='{maps_link}'>Google Maps'da ochish</a>"
+    )
+    for admin_id in get_all_admin_ids():
+        try:
+            await bot.send_location(admin_id, latitude=lat, longitude=lon)
+            await bot.send_message(admin_id, admin_text)
+        except Exception as e:
+            logger.warning(f"Adminga manzil yuborib bo'lmadi ({admin_id}): {e}")
+
+
+@router.message(StateFilter(WaitingDeliveryLocation.order_id), F.text == "🏬 O'zim olib ketaman")
+async def handle_pickup_choice(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    await state.clear()
+    db.update_order_delivery(order_id, None, None, 0)
+
+    await message.answer(
+        "🏬 Yaxshi, o'zingiz do'kondan olib ketasiz. Yetkazib berish kerak emas.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    for admin_id in get_all_admin_ids():
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🏬 Buyurtma #{order_id}: xaridor o'zi olib ketadi (yetkazib berish shart emas).",
+            )
+        except Exception as e:
+            logger.warning(f"Adminga xabar yuborib bo'lmadi ({admin_id}): {e}")
+
+
+@router.message(StateFilter(WaitingDeliveryLocation.order_id))
+async def handle_delivery_location_invalid(message: Message):
+    await message.answer("❗️ Iltimos, pastdagi tugmalardan birini tanlang: manzil yuboring yoki 'O'zim olib ketaman'ni bosing.")
+
+
+# ------------------------------------------------------------------
+# WebApp dan keladigan "sendData" xabarlarini qabul qilish
+# (script.js Telegram.WebApp.sendData() orqali ham yuborishi mumkin,
+#  bu - fetch() usuliga qo'shimcha zaxira yo'l sifatida qo'shildi)
+# ------------------------------------------------------------------
+@router.message(F.web_app_data)
+async def handle_webapp_data(message: Message):
+    try:
+        data = json.loads(message.web_app_data.data)
+    except json.JSONDecodeError:
+        return await message.answer("❗️ Buyurtma ma'lumotini o'qib bo'lmadi.")
+
+    # Bu yerda message.from_user.id Telegram tomonidan tasdiqlangan
+    # (Bot API orqali kelgan), shuning uchun initData tekshirish shart emas.
+    # process_order o'zi xaridorga tasdiqlash + to'lov kartasi xabarini yuboradi.
+    try:
+        await process_order(user_id=message.from_user.id, order_data=data)
+    except ValueError:
+        await message.answer("❗️ Savat bo'sh yoki mahsulotlar topilmadi.")
+
+
+def order_admin_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="lang_uz"),
-                InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-                InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
+                InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"order_ok:{order_id}"),
+                InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"order_no:{order_id}"),
             ]
         ]
     )
 
 
-CARGO_STATUSES = {
-    "accepted": "✅ Qabul qilindi",
-    "shipped": "🚚 Yo'lga chiqdi",
-    "in_transit": "📍 Yo'lda",
-    "delivered": "📦 Yetkazib berildi",
-}
-
-CARGO_STATUS_MESSAGES = {
-    "accepted": "✅ Yukingiz qabul qilindi!\n\nTez orada yo'lga chiqariladi.",
-    "shipped": "🚚 Yukingiz yo'lga chiqdi!\n\nYaqin orada manzilingizga yetib boradi.",
-    "in_transit": "📍 Yukingiz hozir yo'lda!",
-    "delivered": "📦 Yukingiz yetkazib berildi! ✅\n\nXaridingiz uchun rahmat! 🙏",
-}
-
-
-def cargo_admin_keyboard(shipment_id: int, current_status: str) -> InlineKeyboardMarkup:
-    rows = []
-    for status_key, label in CARGO_STATUSES.items():
-        prefix = "🔘 " if status_key == current_status else ""
-        rows.append(
-            [InlineKeyboardButton(f"{prefix}{label}", callback_data=f"cargo_status_{shipment_id}_{status_key}")]
-        )
-    return InlineKeyboardMarkup(rows)
-
-
-def store_category_keyboard() -> InlineKeyboardMarkup:
-    categories = db.get_all_categories()
-    rows = [
-        [InlineKeyboardButton(c["label"], callback_data=f"store_cat_{c['key']}")] for c in categories
-    ]
-    rows.append([InlineKeyboardButton("« Orqaga", callback_data="menu_back")])
-    return InlineKeyboardMarkup(rows)
-
-
-def product_list_keyboard(products, category: str) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(
-                f"{p['label']} — {p['price']:,.0f} so'm".replace(",", " "),
-                callback_data=f"buy_product_{p['key']}",
-            )
-        ]
-        for p in products
-    ]
-    rows.append([InlineKeyboardButton("« Orqaga", callback_data="menu_store")])
-    return InlineKeyboardMarkup(rows)
-
-
-def admin_panel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📢 Barchaga xabar yuborish", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("➕ Mahsulot qo'shish", callback_data="admin_addproduct")],
-            [InlineKeyboardButton("📦 Yuk qo'shish", callback_data="admin_addshipment")],
-            [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
-        ]
-    )
-
-
-def admin_product_category_keyboard() -> InlineKeyboardMarkup:
-    categories = db.get_all_categories()
-    rows = [
-        [InlineKeyboardButton(c["label"], callback_data=f"admin_addproduct_cat_{c['key']}")]
-        for c in categories
-    ]
-    rows.append([InlineKeyboardButton("➕ Yangi kategoriya", callback_data="admin_addcategory")])
-    return InlineKeyboardMarkup(rows)
-
-
-def profile_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(t(lang, "btn_edit_address"), callback_data="edit_address")],
-            [InlineKeyboardButton(t(lang, "btn_transfer"), callback_data="wallet_transfer")],
-            [InlineKeyboardButton(t(lang, "btn_promo"), callback_data="menu_promo")],
-            [InlineKeyboardButton(t(lang, "btn_back"), callback_data="menu_back")],
-        ]
-    )
-
-
-def wallet_keyboard(lang: str = "uz") -> InlineKeyboardMarkup:
-    transfer_label = {"uz": "💸 Pul o'tkazish", "ru": "💸 Перевести деньги", "en": "💸 Transfer money"}
-    back_label = {"uz": "« Orqaga", "ru": "« Назад", "en": "« Back"}
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(transfer_label.get(lang, transfer_label["uz"]), callback_data="wallet_transfer")],
-            [InlineKeyboardButton(back_label.get(lang, back_label["uz"]), callback_data="menu_back")],
-        ]
-    )
-
-
-def rating_keyboard(payment_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("⭐" * n, callback_data=f"rate_{payment_id}_{n}") for n in range(1, 6)]]
-    )
-
-
-def slugify(text: str) -> str:
-    """Matndan xavfsiz, bo'shliqsiz KEY yasaydi (admin buni ko'rmaydi ham)."""
-    import re
-
-    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
-    return slug or "item"
-
-
-def build_profile_text(lang: str, user) -> str:
-    """profile_text shablonini xavfsiz (HTML belgilarini escape qilib) tayyorlaydi."""
-    wallet_id = user["wallet_id"] or db.ensure_wallet_id(user["chat_id"])
-    return t(
-        lang,
-        "profile_text",
-        name=html.escape(user["full_name"] or "-"),
-        phone=html.escape(user["phone_number"] or "-"),
-        username=html.escape(f"@{user['username']}") if user["username"] else "-",
-        address=html.escape(user["address"]) if user["address"] else t(lang, "address_not_set"),
-        balance=f"{user['balance']:,.0f}".replace(",", " "),
-        wallet_id=wallet_id,
-        discount=f"{user['discount_percent']:.0f}",
-    )
-
-
-def terms_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("✅ Tanishib chiqdim", callback_data="accept_terms")]]
-    )
-
-
-TERMS_TEXT = (
-    "📜 <b>Foydalanish shartlari</b>\n"
-    "➖➖➖➖➖➖➖➖➖➖\n"
-    "📦 Yuklar odatda <b>8–15 kun</b> ichida yetkazib beriladi.\n"
-    "💳 To'lov amalga oshirilgandan so'ng pul qaytarilmaydi.\n"
-    "✅ Yuk sifati kafolatlanadi.\n"
-    "⭐ Faqat premium sifatli xizmat taqdim etamiz.\n\n"
-    "Davom etish uchun quyidagi tugmani bosing:"
-)
-
-# Shartlar PDF fayli shu bot.py bilan bir papkada turadi
-# (serverga bot.py bilan birga shartlar.pdf ni ham yuklab qo'ying).
-TERMS_PDF_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shartlar.pdf")
-
-TERMS_CAPTION = (
-    "📜 Foydalanish shartlari ilovada (PDF fayl ko'rinishida).\n"
-    "Iltimos, tanishib chiqing va pastdagi tugmani bosing:"
-)
-
-
-async def send_terms(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    """Shartlar faylini (PDF) 'Tanishib chiqdim' tugmasi bilan yuboradi.
-
-    Fayl topilmasa yoki yuborishda xatolik chiqsa, bot to'xtab qolmasin
-    uchun eski matnli variantga qaytamiz -- foydalanuvchi baribir
-    davom eta oladi.
+async def process_order(user_id: int, order_data: dict) -> dict:
     """
-    if os.path.exists(TERMS_PDF_PATH):
+    Buyurtmani bazaga yozadi va barcha adminlarga tasdiqlash tugmali
+    xabar yuboradi. Bu funksiya ham web_app_data orqali, ham HTTP API
+    (/api/checkout) orqali kelgan buyurtmalar uchun BIR XIL ishlatiladi.
+
+    MUHIM: narx va mahsulot ma'lumotlari HECH QACHON clientdan (browser)
+    kelgan qiymatga ishonib olinmaydi - har bir mahsulot ID va soni
+    bo'yicha bazadan qayta tekshirib, narx shu yerda qayta hisoblanadi.
+    Shunday qilib foydalanuvchi brauzerdan narxni "buzib" yubora olmaydi.
+    """
+    raw_items = order_data.get("items", [])
+    promo_code = order_data.get("promo_code")
+    if promo_code:
+        promo_code = str(promo_code).strip().upper()
+
+    resolved_items = []
+    total_price = 0.0
+    for raw in raw_items:
         try:
-            with open(TERMS_PDF_PATH, "rb") as f:
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=f,
-                    filename="shartlar.pdf",
-                    caption=TERMS_CAPTION,
-                    reply_markup=terms_keyboard(),
-                )
-            return
+            product_id = int(raw.get("id"))
+            qty = int(raw.get("qty", 1))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if qty <= 0:
+            continue
+
+        product = db.get_product_by_id(product_id)
+        if not product or not product.get("is_active", 1):
+            continue  # o'chirilgan/faol bo'lmagan mahsulotni e'tiborsiz qoldiramiz
+
+        size = str(raw.get("size") or "")
+        line_total = product["price"] * qty
+        total_price += line_total
+        resolved_items.append({
+            "id": product_id,
+            "name": product["name"],
+            "price": product["price"],
+            "size": size,
+            "qty": qty,
+        })
+
+    if not resolved_items:
+        raise ValueError("empty_or_invalid_cart")
+
+    discount_percent = 0
+    if promo_code:
+        promo = db.get_promocode(promo_code)
+        if promo:
+            discount_percent = promo["discount_percent"]
+        else:
+            promo_code = None  # noto'g'ri/eskirgan promokod - hisobga olinmaydi
+
+    final_price = total_price * (1 - discount_percent / 100)
+
+    order_id = db.create_order(
+        user_id=user_id,
+        items_json=json.dumps(resolved_items, ensure_ascii=False),
+        total_price=total_price,
+        promo_code=promo_code,
+        discount_percent=discount_percent,
+        final_price=final_price,
+    )
+
+    # Xaridorga buyurtma qabul qilingani va to'lov uchun karta ma'lumotini yuboramiz
+    cards = db.get_all_cards(only_active=True)
+    if cards:
+        card_lines = "\n".join(
+            f"💳 <code>{format_card_number(c['card_number'])}</code>"
+            + (f" — {c['holder_name']}" if c["holder_name"] else "")
+            + (f" ({c['bank_name']})" if c["bank_name"] else "")
+            for c in cards
+        )
+        payment_block = (
+            f"\n\n💳 <b>To'lov uchun karta:</b>\n{card_lines}\n\n"
+            f"To'lovni amalga oshirgach, chek/screenshot yuboring — operator tekshirib buyurtmani tasdiqlaydi."
+        )
+    else:
+        payment_block = "\n\n⏳ Operator tez orada siz bilan bog'lanib, to'lov tafsilotlarini yuboradi."
+
+    customer_text = (
+        f"✅ <b>Buyurtmangiz qabul qilindi!</b> (#{order_id})\n\n"
+        f"💵 Yakuniy summa: <b>{final_price:.0f} so'm</b>"
+        f"{payment_block}"
+    )
+    try:
+        await bot.send_message(user_id, customer_text)
+    except Exception as e:
+        logger.warning(f"Xaridorga xabar yuborib bo'lmadi ({user_id}): {e}")
+
+    # Yetkazib berish narxini hisoblash uchun mijozdan manzilini so'raymiz
+    try:
+        location_kb = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📍 Manzilni yuborish", request_location=True)],
+                [KeyboardButton(text="🏬 O'zim olib ketaman")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await bot.send_message(
+            user_id,
+            "🚚 Yetkazib berish narxini hisoblash uchun manzilingizni yuboring "
+            "(pastdagi tugma orqali), yoki do'kondan o'zingiz olib keting:",
+            reply_markup=location_kb,
+        )
+        buyer_state = await get_user_fsm_context(user_id)
+        await buyer_state.set_state(WaitingDeliveryLocation.order_id)
+        await buyer_state.update_data(order_id=order_id)
+    except Exception as e:
+        logger.warning(f"Manzil so'rovini yuborib bo'lmadi ({user_id}): {e}")
+
+    # Admin(lar)ga xabar matnini tayyorlaymiz
+    items_text = "\n".join(
+        f"  • {i['name']}"
+        + (f" [{i['size']}]" if i["size"] else "")
+        + f" — {i['price']:.0f} so'm x {i['qty']}"
+        for i in resolved_items
+    )
+    promo_line = f"\n🏷 Promokod: {promo_code} (-{discount_percent}%)" if promo_code else ""
+
+    admin_text = (
+        f"🆕 <b>Yangi buyurtma #{order_id}</b>\n\n"
+        f"👤 Foydalanuvchi: <a href='tg://user?id={user_id}'>{user_id}</a>\n"
+        f"🛒 Mahsulotlar:\n{items_text}\n\n"
+        f"💵 Umumiy summa: {total_price:.0f} so'm"
+        f"{promo_line}\n"
+        f"✅ Yakuniy summa: <b>{final_price:.0f} so'm</b>\n\n"
+        f"⏳ Holat: kutilmoqda — quyidagi tugmalar orqali tasdiqlang."
+    )
+
+    for admin_id in get_all_admin_ids():
+        try:
+            await bot.send_message(admin_id, admin_text, reply_markup=order_admin_keyboard(order_id))
         except Exception as e:
-            logger.warning("Shartlar faylini yuborib bo'lmadi (%s), matnga qaytildi: %s", chat_id, e)
+            logger.warning(f"Adminga xabar yuborib bo'lmadi ({admin_id}): {e}")
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=TERMS_TEXT,
-        parse_mode="HTML",
-        reply_markup=terms_keyboard(),
-    )
-
-
-def contact_request_keyboard(label: str = "📱 Raqamni yuborish") -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(label, request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+    return {
+        "order_id": order_id,
+        "total_price": total_price,
+        "discount_percent": discount_percent,
+        "final_price": final_price,
+    }
 
 
-def payment_admin_keyboard(payment_id: int, user_chat_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_payment_{payment_id}"),
-                InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_payment_{payment_id}"),
-            ],
-            [
-                InlineKeyboardButton("✉️ Xabar yozish", callback_data=f"message_user_{user_chat_id}"),
-            ],
-        ]
-    )
+@router.callback_query(F.data.startswith("order_ok:"))
+async def adm_confirm_order(callback):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
 
+    order_id = int(callback.data.split(":", 1)[1])
+    order = db.get_order(order_id)
+    if not order:
+        return await callback.answer("❗️ Buyurtma topilmadi", show_alert=True)
+    if order["status"] != "new":
+        return await callback.answer("Bu buyurtma allaqachon ko'rib chiqilgan.", show_alert=True)
 
-# =======================================================================
-# /start -- ro'yxatdan o'tish YOKI admin panel
-# =======================================================================
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    lang = db.get_language(chat_id)
-    db.set_state(chat_id, None)
-    context.user_data.clear()
-
-    if db.is_admin(chat_id):
-        await update.message.reply_text("❌ Bekor qilindi.", reply_markup=admin_panel_keyboard())
-        return
-
-    await update.message.reply_text(t(lang, "cancel_text"))
-    if db.is_registered(chat_id):
-        await update.message.reply_text(
-            t(lang, "main_menu_prompt"), parse_mode="HTML", reply_markup=main_menu_keyboard(lang)
-        )
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    username = update.effective_user.username
-
-    # Adminlar (asosiy yoki yordamchi) uchun ro'yxatdan o'tish so'ralmaydi
-    if db.is_admin(chat_id):
-        await update.message.reply_text(
-            "🛠 <b>Admin panel</b>\n"
-            "➖➖➖➖➖➖➖➖➖➖\n"
-            "👇 Asosiy amallar tugmalar orqali (xatosiz):\n\n"
-            "<b>Boshqa buyruqlar:</b>\n"
-            "/addpromo KOD SUMMA — promo kod qo'shish\n"
-            "/balance CHAT_ID — hamyonni ko'rish\n"
-            "/addbalance CHAT_ID SUMMA — pul qo'shish\n"
-            "/removebalance CHAT_ID SUMMA — pul ayirish\n"
-            "/adddiscount KOD FOIZ — chegirma kodi yaratish\n"
-            "/setdiscount CHAT_ID FOIZ — mijozga to'g'ridan-to'g'ri chegirma berish\n"
-            "/setdiscountmin SUMMA — chegirma ishlaydigan minimal to'lov summasi\n"
-            "/addcategory KEY NOM — STORE'ga yangi turkum qo'shish (masalan TON kripta)\n"
-            "/products — mahsulotlar ro'yxati\n"
-            "/removeproduct KEY — mahsulotni o'chirish\n"
-            "/cargo KOD — yuk holatini boshqarish\n"
-            "/stats — statistika\n"
-            "/cancel — joriy amalni bekor qilish\n"
-            "/admins — adminlar ro'yxati\n"
-            + ("/addadmin CHAT_ID — yordamchi admin qo'shish\n"
-               "/removeadmin CHAT_ID — adminlikdan olib tashlash\n"
-               if chat_id == MAIN_ADMIN_CHAT_ID else ""),
-            parse_mode="HTML",
-            reply_markup=admin_panel_keyboard(),
-        )
-        return
-
-    user = db.create_user_if_not_exists(chat_id, username)
-    lang = db.get_language(chat_id)
-
-    if user["is_registered"] == 1:
-        if not user["terms_accepted"]:
-            await send_terms(context, chat_id)
-            return
-
-        await update.message.reply_text(
-            t(lang, "welcome_back", name=html.escape(user["full_name"] or "")),
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(lang),
-        )
-        return
-
-    # Referal havolasi orqali kelganmi? (masalan /start ref123456)
-    if context.args and context.args[0].startswith("ref") and user["referred_by"] is None:
-        try:
-            referrer_id = int(context.args[0][3:])
-            db.set_referrer(chat_id, referrer_id)
-        except ValueError:
-            pass
-
-    # Yangi foydalanuvchi -- avval tilni tanlaydi
-    await update.message.reply_text(t(lang, "choose_language"), reply_markup=language_keyboard())
-
-
-async def handle_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str) -> None:
-    db.set_language(chat_id, lang)
-    db.set_state(chat_id, "waiting_name")
-    await context.bot.send_message(
-        chat_id=chat_id, text=t(lang, "welcome_new"), reply_markup=ReplyKeyboardRemove()
-    )
-
-
-# =======================================================================
-# /addpromo KOD SUMMA -- istalgan admin ishlata oladi
-# =======================================================================
-async def addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    args = context.args
-    if len(args) != 2:
-        await update.message.reply_text(
-            "Noto'g'ri format. To'g'ri format:\n/addpromo KOD SUMMA\n\nMisol: /addpromo YANGIYIL2026 50000"
-        )
-        return
-
-    code, amount_str = args
-    code = code.upper()
-
+    db.update_order_status(order_id, "confirmed")
     try:
-        amount = float(amount_str)
-    except ValueError:
-        await update.message.reply_text("Summa raqam bo'lishi kerak.")
-        return
-
-    if amount <= 0:
-        await update.message.reply_text("Summa musbat son bo'lishi kerak.")
-        return
-
-    db.upsert_promo_code(code, amount)
-    await update.message.reply_text(
-        f"✅ Promo kod saqlandi:\nKod: {code}\nSumma: {amount:,.0f} so'm".replace(",", " ")
-    )
-
-
-# =======================================================================
-# /addadmin, /removeadmin, /admins -- faqat ASOSIY admin qo'sha/o'chira oladi
-# =======================================================================
-async def addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if chat_id != MAIN_ADMIN_CHAT_ID:
-        await update.message.reply_text("Bu buyruq faqat asosiy admin uchun.")
-        return
-
-    if len(context.args) != 1 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text(
-            "To'g'ri format:\n/addadmin CHAT_ID\n\nMisol: /addadmin 123456789\n\n"
-            "Chat ID'ni bilish uchun o'sha odam @userinfobot'ga yozishi kerak."
-        )
-        return
-
-    new_admin_id = int(context.args[0])
-    db.add_admin(new_admin_id, added_by=chat_id)
-
-    await update.message.reply_text(f"✅ {new_admin_id} endi yordamchi admin.")
-
-    try:
-        await context.bot.send_message(
-            chat_id=new_admin_id,
-            text="🛠 Sizga admin huquqi berildi! Admin panelni ochish uchun /start bosing.",
+        await callback.message.edit_text(
+            callback.message.html_text + f"\n\n✅ <b>TASDIQLANDI</b> — {callback.from_user.full_name}",
+            reply_markup=None,
         )
     except Exception:
-        await update.message.reply_text(
-            "⚠️ Diqqat: bu foydalanuvchiga xabar yubora olmadim -- u botga hali /start bosmagan bo'lishi mumkin."
-        )
-
-
-async def removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if chat_id != MAIN_ADMIN_CHAT_ID:
-        await update.message.reply_text("Bu buyruq faqat asosiy admin uchun.")
-        return
-
-    if len(context.args) != 1 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text("To'g'ri format:\n/removeadmin CHAT_ID")
-        return
-
-    target_id = int(context.args[0])
-    db.remove_admin(target_id)
-    await update.message.reply_text(f"✅ {target_id} adminlikdan olib tashlandi.")
-
-
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    stats = db.get_stats()
-    avg_rating, rating_count = db.get_rating_stats()
-    await update.message.reply_text(
-        (
-            "📊 Statistika\n\n"
-            f"👥 Ro'yxatdan o'tganlar: {stats['total_users']}\n"
-            f"⏳ Kutilayotgan cheklar: {stats['pending_payments']}\n"
-            f"✅ Tasdiqlangan to'lovlar: {stats['approved_payments']}\n"
-            f"💰 Tasdiqlangan summa: {stats['approved_sum']:,.0f} so'm\n"
-            f"📦 Jami yuklar: {stats['total_shipments']}\n"
-            f"⭐ O'rtacha reyting: {avg_rating:.1f} ({rating_count} ta baho)\n"
-            f"💸 O'tkazmalardan komissiya: {stats['total_commission']:,.0f} so'm".replace(",", " ")
-        ).replace(",", " ")
-    )
-
-
-async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    helper_ids = db.get_helper_admin_ids()
-    text = f"👑 Asosiy admin: {MAIN_ADMIN_CHAT_ID}\n"
-    if helper_ids:
-        text += "\n🛠 Yordamchi adminlar:\n" + "\n".join(f"- {aid}" for aid in helper_ids)
-    else:
-        text += "\nYordamchi adminlar yo'q."
-
-    await update.message.reply_text(text)
-
-
-async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) != 1 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text("To'g'ri format:\n/balance CHAT_ID")
-        return
-
-    target_id = int(context.args[0])
-    user = db.get_user(target_id)
-
-    if user is None:
-        await update.message.reply_text("Bunday foydalanuvchi topilmadi.")
-        return
-
-    await update.message.reply_text(
-        f"👤 {user['full_name'] or '-'} (@{user['username'] or '-'})\n"
-        f"🆔 Chat ID: {target_id}\n"
-        f"💼 Balans: {user['balance']:,.0f} so'm".replace(",", " ")
-    )
-
-
-async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) != 2 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text(
-            "To'g'ri format:\n/addbalance CHAT_ID SUMMA\n\nMisol: /addbalance 123456789 20000"
-        )
-        return
-
-    target_id = int(context.args[0])
+        pass
 
     try:
-        amount = float(context.args[1])
-    except ValueError:
-        await update.message.reply_text("Summa raqam bo'lishi kerak.")
-        return
-
-    user = db.get_user(target_id)
-    if user is None:
-        await update.message.reply_text("Bunday foydalanuvchi topilmadi (u hali botga /start bosmagan).")
-        return
-
-    db.add_balance(target_id, amount)
-    new_balance = db.get_balance(target_id)
-
-    await update.message.reply_text(
-        f"✅ {amount:,.0f} so'm qo'shildi.\nYangi balans: {new_balance:,.0f} so'm".replace(",", " ")
-    )
-
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=(
-                f"💼 Hamyoningizga {amount:,.0f} so'm qo'shildi.\n"
-                f"Joriy balans: {new_balance:,.0f} so'm"
-            ).replace(",", " "),
+        await bot.send_message(
+            order["user_id"],
+            f"✅ Buyurtmangiz <b>#{order_id}</b> tasdiqlandi!\nTez orada operator siz bilan bog'lanadi.",
         )
     except Exception as e:
-        logger.warning("Foydalanuvchiga (%s) balans haqida xabar yuborilmadi: %s", target_id, e)
+        logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi ({order['user_id']}): {e}")
+
+    await callback.answer("Tasdiqlandi ✅")
 
 
-def _parse_add_product_args(args: list[str]) -> tuple[str, float, str] | None:
-    """/addpremium KEY NARX NOM... ni ajratib beradi. NOM bo'sh joyli bo'lishi mumkin."""
-    if len(args) < 3:
-        return None
-    key = args[0]
+@router.callback_query(F.data.startswith("order_no:"))
+async def adm_cancel_order(callback):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔️ Ruxsat yo'q", show_alert=True)
+
+    order_id = int(callback.data.split(":", 1)[1])
+    order = db.get_order(order_id)
+    if not order:
+        return await callback.answer("❗️ Buyurtma topilmadi", show_alert=True)
+    if order["status"] != "new":
+        return await callback.answer("Bu buyurtma allaqachon ko'rib chiqilgan.", show_alert=True)
+
+    db.update_order_status(order_id, "cancelled")
     try:
-        price = float(args[1])
-    except ValueError:
-        return None
-    label = " ".join(args[2:])
-    return key, price, label
-
-
-async def add_premium_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    parsed = _parse_add_product_args(context.args)
-    if parsed is None:
-        await update.message.reply_text(
-            "To'g'ri format:\n/addpremium KEY NARX NOM\n\nMisol: /addpremium premium_3m 89000 Telegram Premium 3 oy"
+        await callback.message.edit_text(
+            callback.message.html_text + f"\n\n❌ <b>BEKOR QILINDI</b> — {callback.from_user.full_name}",
+            reply_markup=None,
         )
-        return
-
-    key, price, label = parsed
-    db.upsert_product(key, "premium", label, price)
-    await update.message.reply_text(f"✅ Qo'shildi: {label} — {price:,.0f} so'm".replace(",", " "))
-
-
-async def add_stars_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    parsed = _parse_add_product_args(context.args)
-    if parsed is None:
-        await update.message.reply_text(
-            "To'g'ri format:\n/addstars KEY NARX NOM\n\nMisol: /addstars stars_100 15000 100 ta Stars"
-        )
-        return
-
-    key, price, label = parsed
-    db.upsert_product(key, "stars", label, price)
-    await update.message.reply_text(f"✅ Qo'shildi: {label} — {price:,.0f} so'm".replace(",", " "))
-
-
-async def add_category_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "To'g'ri format:\n/addcategory KEY NOM\n\nMisol: /addcategory ton 💎 TON Kripta"
-        )
-        return
-
-    key = slugify(context.args[0])
-    label = " ".join(context.args[1:])
-
-    if db.get_category(key) is not None:
-        await update.message.reply_text("Bunday KEY bilan kategoriya allaqachon mavjud.")
-        return
-
-    db.create_category(key, label)
-    await update.message.reply_text(
-        f"✅ Yangi kategoriya qo'shildi:\nKEY: {key}\nNomi: {label}\n\n"
-        f"Endi shu turkumga mahsulot qo'shish uchun \"➕ Mahsulot qo'shish\" tugmasidan foydalaning."
-    )
-
-
-async def add_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) != 2:
-        await update.message.reply_text(
-            "To'g'ri format:\n/adddiscount KOD FOIZ\n\nMisol: /adddiscount YANGIYIL2026 15"
-        )
-        return
-
-    code, percent_str = context.args
-    code = code.upper()
+    except Exception:
+        pass
 
     try:
-        percent = float(percent_str)
-    except ValueError:
-        await update.message.reply_text("Foiz raqam bo'lishi kerak.")
-        return
-
-    if not (0 < percent <= 100):
-        await update.message.reply_text("Foiz 0 dan 100 gacha bo'lishi kerak.")
-        return
-
-    db.upsert_promo_code(code, percent, code_type="discount")
-    await update.message.reply_text(f"✅ Chegirma kodi saqlandi:\nKod: {code}\nChegirma: {percent:.0f}%")
-
-
-async def set_discount_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) != 2 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text(
-            "To'g'ri format:\n/setdiscount CHAT_ID FOIZ\n\nMisol: /setdiscount 123456789 10\n"
-            "(0 kiritsangiz, chegirma bekor qilinadi)"
-        )
-        return
-
-    target_id = int(context.args[0])
-
-    try:
-        percent = float(context.args[1])
-    except ValueError:
-        await update.message.reply_text("Foiz raqam bo'lishi kerak.")
-        return
-
-    if not (0 <= percent <= 100):
-        await update.message.reply_text("Foiz 0 dan 100 gacha bo'lishi kerak.")
-        return
-
-    user = db.get_user(target_id)
-    if user is None:
-        await update.message.reply_text("Bunday foydalanuvchi topilmadi.")
-        return
-
-    db.set_discount(target_id, percent)
-    await update.message.reply_text(f"✅ {target_id} uchun chegirma {percent:.0f}% qilib belgilandi.")
-
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=(
-                f"🏷 Sizga {percent:.0f}% chegirma faollashtirildi!\n"
-                "(Faqat \"To'lov\" bo'limidagi veb-sayt to'lovlariga, 1 marta ishlatiladi. "
-                "Telegram Premium/Stars xaridlariga qo'llanilmaydi.)"
-                if percent > 0
-                else "Chegirmangiz bekor qilindi."
-            ),
+        await bot.send_message(
+            order["user_id"],
+            f"❌ Buyurtmangiz <b>#{order_id}</b> bekor qilindi.\nSavollar bo'lsa, operatorga yozing.",
         )
     except Exception as e:
-        logger.warning("Foydalanuvchiga (%s) chegirma haqida xabar yuborilmadi: %s", target_id, e)
+        logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi ({order['user_id']}): {e}")
+
+    await callback.answer("Bekor qilindi ❌")
 
 
-async def set_discount_min_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
+# ------------------------------------------------------------------
+# HTTP API (aiohttp) - webapp/script.js shu endpointlarga fetch() qiladi
+# ------------------------------------------------------------------
 
-    if len(context.args) != 1:
-        current = db.get_min_discount_amount()
-        await update.message.reply_text(
-            "To'g'ri format:\n/setdiscountmin SUMMA\n\n"
-            "Misol: /setdiscountmin 100000\n"
-            "(Chegirma faqat shu summadan yuqori to'lovlarga ishlaydi. 0 qilsangiz -- har qanday summaga ishlaydi)\n\n"
-            f"Hozirgi qiymat: {current:,.0f} so'm".replace(",", " ")
+routes = web.RouteTableDef()
+
+
+def cors_headers():
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
+
+@routes.get("/api/products")
+async def api_get_products(request: web.Request):
+    """WebApp ochilganda script.js shu yerdan mahsulotlar ro'yxatini oladi."""
+    products = db.get_all_products(only_active=True)
+    return web.json_response(products, headers=cors_headers())
+
+
+@routes.get("/api/promocode/{code}")
+async def api_check_promocode(request: web.Request):
+    """script.js promokod kiritilganda shu endpointga so'rov yuboradi
+    va chegirma foizini oladi (agar mavjud bo'lsa)."""
+    code = request.match_info["code"]
+    promo = db.get_promocode(code)
+    if promo:
+        return web.json_response(
+            {"valid": True, "discount_percent": promo["discount_percent"]},
+            headers=cors_headers(),
         )
-        return
+    return web.json_response({"valid": False}, headers=cors_headers())
+
+
+@routes.post("/api/checkout")
+async def api_checkout(request: web.Request):
+    """
+    'Sotib olish' tugmasi bosilganda script.js shu endpointga
+    fetch() orqali POST so'rov yuboradi.
+
+    XAVFSIZLIK: foydalanuvchi ID si HECH QACHON body.user_id dan
+    to'g'ridan-to'g'ri olinmaydi (buni istalgan kishi qalbakilashtira
+    oladi). Buning o'rniga Telegram WebApp yuborgan `init_data` HMAC
+    imzosi tekshiriladi va user_id shu tasdiqlangan ma'lumotdan olinadi.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400, headers=cors_headers())
+
+    validated = validate_init_data(body.get("init_data", ""), BOT_TOKEN)
+    if not validated or not validated.get("user") or not validated["user"].get("id"):
+        return web.json_response({"ok": False, "error": "auth_failed"}, status=401, headers=cors_headers())
+
+    user_id = int(validated["user"]["id"])
 
     try:
-        amount = float(context.args[0])
+        result = await process_order(user_id=user_id, order_data=body)
     except ValueError:
-        await update.message.reply_text("Summa raqam bo'lishi kerak.")
-        return
+        return web.json_response({"ok": False, "error": "empty_cart"}, status=400, headers=cors_headers())
 
-    if amount < 0:
-        await update.message.reply_text("Summa manfiy bo'lishi mumkin emas.")
-        return
+    return web.json_response({"ok": True, **result}, headers=cors_headers())
 
-    db.set_min_discount_amount(amount)
-    await update.message.reply_text(
-        f"✅ Chegirma uchun minimal to'lov summasi {amount:,.0f} so'm qilib belgilandi.\n"
-        "(Bundan past to'lovlarga chegirma taklif qilinmaydi, foydalanuvchining chegirmasi keyingi safarga saqlanib qoladi.)".replace(
-            ",", " "
-        )
-    )
 
+@routes.options("/{tail:.*}")
+async def api_options(request: web.Request):
+    """Brauzerning CORS preflight (OPTIONS) so'rovlariga javob."""
+    return web.Response(headers=cors_headers())
 
-async def remove_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
 
-    if len(context.args) != 1:
-        await update.message.reply_text("To'g'ri format:\n/removeproduct KEY")
-        return
+def build_web_app() -> web.Application:
+    app = web.Application()
+    app.add_routes(routes)
+    # webapp/index.html, script.js va boshqa statik fayllarni /app manzilidan xizmat qilamiz
+    app.router.add_static("/app", path=str(WEBAPP_DIR), show_index=True)
+    return app
 
-    removed = db.deactivate_product(context.args[0])
-    await update.message.reply_text("✅ O'chirildi." if removed else "Bunday KEY topilmadi.")
 
+# ------------------------------------------------------------------
+# ISHGA TUSHIRISH: bot polling + HTTP server bir vaqtda ishlaydi
+# ------------------------------------------------------------------
 
-async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
+async def start_http_server():
+    app = build_web_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, HTTP_HOST, HTTP_PORT)
+    await site.start()
+    logger.info(f"HTTP server ishga tushdi: http://{HTTP_HOST}:{HTTP_PORT}/app")
 
-    products = db.get_all_products()
-    if not products:
-        await update.message.reply_text("Hozircha hech qanday mahsulot qo'shilmagan.")
-        return
 
-    lines = ["📦 Faol mahsulotlar:\n"]
-    for p in products:
-        cat = db.get_category(p["category"])
-        cat_label = cat["label"] if cat else p["category"]
-        lines.append(f"{cat_label} | {p['key']} | {p['label']} — {p['price']:,.0f} so'm".replace(",", " "))
-
-    await update.message.reply_text("\n".join(lines))
-
-
-async def create_shipment_and_notify(
-    context: ContextTypes.DEFAULT_TYPE, target_id: int, tracking_code: str, description: str
-) -> int | None:
-    """Yuk yaratadi va mijozga xabar yuboradi. Muvaffaqiyatsiz bo'lsa None qaytaradi."""
-    shipment_id = db.create_shipment(tracking_code, target_id, description)
-    if shipment_id is None:
-        return None
-
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=(
-                f"📦 Sizga yangi yuk biriktirildi!\n\n"
-                f"🔖 Kuzatuv kodi: {tracking_code}\n"
-                f"📝 Tavsif: {description}\n"
-                f"📍 Holat: {CARGO_STATUSES['accepted']}\n\n"
-                "Holatni istalgan vaqtda \"📦 Yuk kuzatish\" bo'limidan tekshirib turishingiz mumkin."
-            ),
-        )
-    except Exception as e:
-        logger.warning("Foydalanuvchiga (%s) yuk haqida xabar yuborilmadi: %s", target_id, e)
-
-    return shipment_id
-
-
-async def add_shipment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) < 3 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text(
-            "To'g'ri format:\n/addshipment CHAT_ID KOD TAVSIF\n\n"
-            "Misol: /addshipment 123456789 UZ12345 iPhone 15 Pro Max"
-        )
-        return
-
-    target_id = int(context.args[0])
-    tracking_code = context.args[1].upper()
-    description = " ".join(context.args[2:])
-
-    user = db.get_user(target_id)
-    if user is None:
-        await update.message.reply_text("Bunday foydalanuvchi topilmadi (u hali botga /start bosmagan).")
-        return
-
-    shipment_id = await create_shipment_and_notify(context, target_id, tracking_code, description)
-    if shipment_id is None:
-        await update.message.reply_text(f"❌ '{tracking_code}' kodi allaqachon band. Boshqa kod tanlang.")
-        return
-
-    await update.message.reply_text(
-        f"✅ Yuk yaratildi!\n\n📦 Kod: {tracking_code}\n📝 Tavsif: {description}\n\n"
-        "Statusni boshqarish uchun pastdagi tugmalardan foydalaning:",
-        reply_markup=cargo_admin_keyboard(shipment_id, "accepted"),
-    )
-
-
-async def handle_admin_shipment_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
-
-    if not text.lstrip("-").isdigit():
-        await message.reply_text("Iltimos, faqat raqamlardan iborat Chat ID kiriting. Qaytadan urinib ko'ring:")
-        return
-
-    target_id = int(text)
-    user = db.get_user(target_id)
-    if user is None:
-        await message.reply_text(
-            "❌ Bunday foydalanuvchi topilmadi (u hali botga /start bosmagan). Chat ID'ni tekshirib, qaytadan kiriting:"
-        )
-        return
-
-    context.user_data["new_shipment_chatid"] = target_id
-    db.set_state(chat_id, "admin_waiting_shipment_code")
-    await message.reply_text(
-        f"👤 Mijoz: {user['full_name']}\n\nEndi kuzatuv kodini kiriting (masalan: UZ12345):"
-    )
-
-
-async def handle_admin_shipment_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    code = (message.text or "").strip().upper()
-
-    if not code:
-        await message.reply_text("Iltimos, kuzatuv kodini matn ko'rinishida kiriting.")
-        return
-
-    if db.get_shipment_by_code(code) is not None:
-        await message.reply_text(f"❌ '{code}' kodi allaqachon band. Boshqa kod kiriting:")
-        return
-
-    context.user_data["new_shipment_code"] = code
-    db.set_state(chat_id, "admin_waiting_shipment_desc")
-    await message.reply_text("Endi mahsulot tavsifini kiriting (masalan: iPhone 15 Pro Max):")
-
-
-async def handle_admin_shipment_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    description = (message.text or "").strip()
-
-    if not description:
-        await message.reply_text("Iltimos, tavsifni matn ko'rinishida kiriting.")
-        return
-
-    target_id = context.user_data.get("new_shipment_chatid")
-    tracking_code = context.user_data.get("new_shipment_code")
-
-    db.set_state(chat_id, None)
-    context.user_data.pop("new_shipment_chatid", None)
-    context.user_data.pop("new_shipment_code", None)
-
-    shipment_id = await create_shipment_and_notify(context, target_id, tracking_code, description)
-    if shipment_id is None:
-        await message.reply_text("❌ Xatolik: kod band bo'lib qoldi. Qaytadan /start > admin panel orqali urinib ko'ring.")
-        return
-
-    await message.reply_text(
-        f"✅ Yuk yaratildi!\n\n📦 Kod: {tracking_code}\n📝 Tavsif: {description}\n\n"
-        "Statusni boshqarish uchun pastdagi tugmalardan foydalaning:",
-        reply_markup=cargo_admin_keyboard(shipment_id, "accepted"),
-    )
-
-
-async def open_cargo_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) != 1:
-        await update.message.reply_text("To'g'ri format:\n/cargo KOD")
-        return
-
-    shipment = db.get_shipment_by_code(context.args[0].upper())
-    if shipment is None:
-        await update.message.reply_text("Bunday kuzatuv kodi topilmadi.")
-        return
-
-    await update.message.reply_text(
-        f"📦 Kod: {shipment['tracking_code']}\n"
-        f"📝 Tavsif: {shipment['description']}\n"
-        f"🆔 Mijoz: {shipment['user_chat_id']}\n"
-        f"📍 Joriy holat: {CARGO_STATUSES.get(shipment['status'], shipment['status'])}\n\n"
-        "Statusni yangilash uchun tugmani bosing:",
-        reply_markup=cargo_admin_keyboard(shipment["id"], shipment["status"]),
-    )
-
-
-async def remove_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if not db.is_admin(chat_id):
-        await update.message.reply_text("Bu buyruq faqat admin uchun.")
-        return
-
-    if len(context.args) != 2 or not context.args[0].lstrip("-").isdigit():
-        await update.message.reply_text(
-            "To'g'ri format:\n/removebalance CHAT_ID SUMMA\n\nMisol: /removebalance 123456789 20000"
-        )
-        return
-
-    target_id = int(context.args[0])
-
-    try:
-        amount = float(context.args[1])
-    except ValueError:
-        await update.message.reply_text("Summa raqam bo'lishi kerak.")
-        return
-
-    if amount <= 0:
-        await update.message.reply_text("Summa musbat son bo'lishi kerak.")
-        return
-
-    user = db.get_user(target_id)
-    if user is None:
-        await update.message.reply_text("Bunday foydalanuvchi topilmadi.")
-        return
-
-    db.add_balance(target_id, -amount)
-    new_balance = db.get_balance(target_id)
-
-    await update.message.reply_text(
-        f"✅ {amount:,.0f} so'm ayirildi.\nYangi balans: {new_balance:,.0f} so'm".replace(",", " ")
-    )
-
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=(
-                f"💼 Hamyoningizdan {amount:,.0f} so'm ayirildi.\n"
-                f"Joriy balans: {new_balance:,.0f} so'm"
-            ).replace(",", " "),
-        )
-    except Exception as e:
-        logger.warning("Foydalanuvchiga (%s) balans haqida xabar yuborilmadi: %s", target_id, e)
-
-
-# =======================================================================
-# Barcha oddiy xabarlar (matn / kontakt / rasm) -- state-machine
-# =======================================================================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-
-    # ---------------------------------------------------------
-    # 0) Admin support xabariga "Reply" qildimi?
-    # ---------------------------------------------------------
-    if db.is_admin(chat_id) and message.reply_to_message is not None:
-        handled = await handle_admin_support_reply(update, context)
-        if handled:
-            return
-
-    # ---------------------------------------------------------
-    # 0.5) Admin "Barchaga xabar yuborish" tugmasidan keyin matn yozdimi?
-    # ---------------------------------------------------------
-    if db.is_admin(chat_id):
-        admin_user = db.create_user_if_not_exists(chat_id, update.effective_user.username)
-        state = admin_user["state"] or ""
-
-        if state.startswith("waiting_direct_message:"):
-            target_chat_id = int(state.split(":", 1)[1])
-            await handle_direct_message(update, context, target_chat_id)
-            return
-
-        if state == "waiting_broadcast_message":
-            await handle_broadcast_message(update, context)
-            return
-
-        if state == "admin_waiting_product_name":
-            await handle_admin_product_name(update, context)
-            return
-
-        if state == "admin_waiting_product_price":
-            await handle_admin_product_price(update, context)
-            return
-
-        if state == "admin_waiting_category_key":
-            await handle_admin_category_key(update, context)
-            return
-
-        if state == "admin_waiting_category_label":
-            await handle_admin_category_label(update, context)
-            return
-
-        if state == "admin_waiting_shipment_chatid":
-            await handle_admin_shipment_chatid(update, context)
-            return
-
-        if state == "admin_waiting_shipment_code":
-            await handle_admin_shipment_code(update, context)
-            return
-
-        if state == "admin_waiting_shipment_desc":
-            await handle_admin_shipment_desc(update, context)
-            return
-
-    user = db.create_user_if_not_exists(chat_id, update.effective_user.username)
-
-    # Adminlar oddiy ro'yxatdan o'tish oqimiga tushmaydi
-    if db.is_admin(chat_id):
-        return
-
-    state = user["state"]
-
-    # ---------------------------------------------------------
-    # 1) Ro'yxatdan o'tish bosqichlari
-    # ---------------------------------------------------------
-    if state == "waiting_name":
-        await handle_waiting_name(update, context)
-        return
-
-    if state == "waiting_phone":
-        await handle_waiting_phone(update, context)
-        return
-
-    if not db.is_registered(chat_id):
-        await message.reply_text("Iltimos, avval ro'yxatdan o'ting: /start")
-        return
-
-    # ---------------------------------------------------------
-    # 2) To'lov cheki
-    # ---------------------------------------------------------
-    if (state or "").startswith("waiting_recipient_info:"):
-        product_key = state.split(":", 1)[1]
-        await handle_recipient_info_input(update, context, product_key)
-        return
-
-    if state == "waiting_payment_amount":
-        await handle_payment_amount_input(update, context)
-        return
-
-    if (state or "").startswith("waiting_payment_photo_amt:"):
-        _, final_s, orig_s, pct_s = state.split(":")
-        await handle_payment_photo(
-            update,
-            context,
-            final_amount=float(final_s),
-            original_amount=float(orig_s),
-            discount_pct=float(pct_s),
-        )
-        return
-
-    if state == "waiting_payment_photo" or (state or "").startswith("waiting_payment_photo:"):
-        product_key = None
-        recipient_info = None
-        if state and state.startswith("waiting_payment_photo:"):
-            parts = state.split(":", 2)
-            product_key = parts[1] if len(parts) > 1 and parts[1] else None
-            recipient_info = unquote(parts[2]) if len(parts) > 2 and parts[2] else None
-        await handle_payment_photo(update, context, product_key, recipient_info=recipient_info)
-        return
-
-    # ---------------------------------------------------------
-    # 3) Support xabari
-    # ---------------------------------------------------------
-    if state == "waiting_support_message":
-        await handle_support_message(update, context)
-        return
-
-    # ---------------------------------------------------------
-    # 4) Promo kod
-    # ---------------------------------------------------------
-    if state == "waiting_promo_code":
-        await handle_promo_code(update, context)
-        return
-
-    # ---------------------------------------------------------
-    # 5) Yuk kuzatuv kodi
-    # ---------------------------------------------------------
-    if state == "waiting_cargo_code":
-        await handle_cargo_code(update, context)
-        return
-
-    # ---------------------------------------------------------
-    # 6) Hamyondan hamyonga pul o'tkazish
-    # ---------------------------------------------------------
-    if state == "waiting_transfer_recipient":
-        await handle_transfer_recipient(update, context)
-        return
-
-    if (state or "").startswith("waiting_transfer_amount:"):
-        recipient_id = int(state.split(":", 1)[1])
-        await handle_transfer_amount(update, context, recipient_id)
-        return
-
-    # ---------------------------------------------------------
-    # 7) Profil -- manzilni tahrirlash
-    # ---------------------------------------------------------
-    if state == "waiting_address":
-        await handle_address_input(update, context)
-        return
-
-    # ---------------------------------------------------------
-    # 5) Hech qanday state yo'q -- asosiy menyu
-    # ---------------------------------------------------------
-    if not user["terms_accepted"]:
-        await send_terms(context, chat_id)
-        return
-
-    await message.reply_text(
-        t(db.get_language(chat_id), "main_menu_prompt"),
-        parse_mode="HTML",
-        reply_markup=main_menu_keyboard(db.get_language(chat_id)),
-    )
-
-
-async def handle_waiting_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
-    lang = db.get_language(chat_id)
-
-    if len(text) < 2:
-        await message.reply_text(t(lang, "ask_name_invalid"))
-        return
-
-    db.save_name(chat_id, text)
-    await message.reply_text(
-        t(lang, "ask_phone", name=text),
-        reply_markup=contact_request_keyboard(t(lang, "phone_button")),
-    )
-
-
-async def handle_waiting_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    lang = db.get_language(chat_id)
-    contact = message.contact
-
-    if contact is None:
-        await message.reply_text(
-            'Iltimos, telefon raqamingizni faqat pastdagi "📱 Raqamni yuborish" tugmasi orqali yuboring.',
-            reply_markup=contact_request_keyboard(t(lang, "phone_button")),
-        )
-        return
-
-    if contact.user_id != chat_id:
-        await message.reply_text(
-            "Iltimos, faqat o'zingizning raqamingizni yuboring.",
-            reply_markup=contact_request_keyboard(t(lang, "phone_button")),
-        )
-        return
-
-    user_before = db.get_user(chat_id)
-    db.save_phone_and_finish_registration(chat_id, contact.phone_number)
-
-    # Avvalgi "Raqamni yuborish" pastki tugmasini majburan olib tashlaymiz
-    # (aks holda u ekranda abadiy osilib qolaveradi)
-    await message.reply_text("Rahmat! ✅", reply_markup=ReplyKeyboardRemove())
-
-    # Asosiy menyudan oldin -- bir martalik shartlarga rozilik ekrani
-    await send_terms(context, chat_id)
-
-    # Agar referal havolasi orqali kelgan bo'lsa, taklif qilgan odamga bonus beramiz
-    referrer_id = user_before["referred_by"] if user_before else None
-    if referrer_id:
-        db.add_balance(referrer_id, REFERRAL_BONUS)
-        referrer_lang = db.get_language(referrer_id)
-        try:
-            await context.bot.send_message(
-                chat_id=referrer_id,
-                text=t(referrer_lang, "referral_bonus_notice", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " ")),
-            )
-        except Exception as e:
-            logger.warning("Referal bonusi haqida (%s) xabar yuborilmadi: %s", referrer_id, e)
-
-
-
-
-async def handle_recipient_info_input(update: Update, context: ContextTypes.DEFAULT_TYPE, product_key: str) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
-
-    if not text:
-        await message.reply_text("Iltimos, username yoki telefon raqamini matn ko'rinishida yozing:")
-        return
-
-    if len(text) > 100:
-        await message.reply_text("Juda uzun matn. Iltimos, qisqaroq yozing:")
-        return
-
-    db.set_state(chat_id, f"waiting_payment_photo:{product_key}:{quote(text)}")
-    await message.reply_text(
-        f"✅ Qabul qilindi: {text}\n\nEndi chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
-    )
-
-
-def discount_choice_keyboard(final_amount: float, original_amount: float, discount_pct: float) -> InlineKeyboardMarkup:
-    # Callback_data ichida summalarni butun son (tiyinsiz) qilib yuboramiz
-    payload = f"{round(final_amount)}:{round(original_amount)}:{discount_pct:.0f}"
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(f"✅ Chegirmani qo'llash (-{discount_pct:.0f}%)", callback_data=f"apply_discount_yes:{payload}")],
-            [InlineKeyboardButton("❌ Ishlatmayman", callback_data=f"apply_discount_no:{payload}")],
-        ]
-    )
-
-
-async def handle_payment_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    text = (message.text or "").strip().replace(" ", "").replace(",", "")
-
-    try:
-        amount = float(text)
-    except ValueError:
-        await message.reply_text("Iltimos, to'lov summasini faqat raqamda yozing (masalan: 150000).")
-        return
-
-    if amount <= 0:
-        await message.reply_text("Summa noto'g'ri. Iltimos, qaytadan kiriting.")
-        return
-
-    user = db.get_user(chat_id)
-    min_amount = db.get_min_discount_amount()
-
-    if user and user["discount_percent"] > 0 and amount >= min_amount:
-        # Chegirma mavjud va shart bajarilgan -- foydalanuvchi o'zi hal qiladi, ishlatadimi yoki yo'q
-        discounted = round(amount * (1 - user["discount_percent"] / 100))
-        db.set_state(chat_id, None)
-        await message.reply_text(
-            (
-                f"💳 Kiritilgan summa: {amount:,.0f} so'm\n"
-                f"🏷 Sizda {user['discount_percent']:.0f}% chegirma mavjud (bu safar ishlatilsa, keyingi safar qolmaydi).\n\n"
-                f"Chegirmani shu to'lovga qo'llaymizmi?"
-            ).replace(",", " "),
-            reply_markup=discount_choice_keyboard(discounted, amount, user["discount_percent"]),
-        )
-        return
-
-    # Chegirma yo'q yoki summa minimal chegaradan past -- to'g'ridan-to'g'ri chekni so'raymiz
-    db.set_state(chat_id, f"waiting_payment_photo_amt:{round(amount)}:{round(amount)}:0")
-    await message.reply_text(
-        f"💳 To'lov summasi: {amount:,.0f} so'm qabul qilindi.\n\nChekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾".replace(
-            ",", " "
-        )
-    )
-
-
-async def handle_payment_photo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    product_key: str | None = None,
-    final_amount: float | None = None,
-    original_amount: float | None = None,
-    discount_pct: float = 0,
-    recipient_info: str | None = None,
-) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-
-    if not message.photo:
-        await message.reply_text("Iltimos, chekingizni RASM ko'rinishida yuboring (fayl emas).")
-        return
-
-    product = db.get_product(product_key) if product_key else None
-    user = db.get_user(chat_id)
-
-    # Telegram Premium / Stars -- doim to'liq narx, chegirma qo'llanilmaydi
-    price_for_db = product["price"] if product is not None else final_amount
-
-    file_id = message.photo[-1].file_id  # eng katta o'lchamdagi rasm
-    payment_id = db.insert_payment(
-        chat_id,
-        file_id,
-        product_key=product["key"] if product else None,
-        product_label=product["label"] if product else None,
-        product_price=price_for_db,
-        recipient_info=recipient_info,
-    )
-
-    if product is not None:
-        product_line = f"🛒 Mahsulot: {product['label']} ({product['price']:,.0f} so'm)\n".replace(",", " ")
-    elif final_amount is not None:
-        if discount_pct and discount_pct > 0 and original_amount is not None:
-            product_line = (
-                f"💳 To'lov summasi: <s>{original_amount:,.0f} so'm</s> <b>{final_amount:,.0f} so'm</b> "
-                f"(-{discount_pct:.0f}% chegirma)\n"
-            ).replace(",", " ")
-        else:
-            product_line = f"💳 To'lov summasi: {final_amount:,.0f} so'm\n".replace(",", " ")
-    else:
-        product_line = ""
-    recipient_line = f"👤 Kimga: {html.escape(recipient_info)}\n" if recipient_info else ""
-    address_line = f"📍 Manzil: {user['address']}\n" if user["address"] else ""
-    caption = (
-        "🧾 Yangi to'lov cheki!\n\n"
-        f"{product_line}"
-        f"{recipient_line}"
-        f"👤 Ism: {user['full_name']}\n"
-        f"📞 Tel: {user['phone_number']}\n"
-        f"{address_line}"
-        f"🆔 Chat ID: {chat_id}\n"
-        f"#to'lov_{payment_id}"
-    )
-
-    # Barcha adminlarga (asosiy + yordamchi) yuboramiz
-    for admin_id in db.get_all_admin_ids():
-        try:
-            sent = await context.bot.send_photo(
-                chat_id=admin_id,
-                photo=file_id,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=payment_admin_keyboard(payment_id, chat_id),
-            )
-            db.add_payment_notification(payment_id, admin_id, sent.message_id)
-        except Exception as e:
-            logger.warning("Adminga (%s) chek yuborilmadi: %s", admin_id, e)
-
-    db.set_state(chat_id, None)
-    await message.reply_text(
-        "Chekingiz qabul qilindi ✅\nIltimos, tasdiqlanishini kuting. Natija haqida sizga xabar beramiz."
-    )
-
-
-
-async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
-
-    if not text:
-        await message.reply_text("Iltimos, savolingizni matn ko'rinishida yozing.")
-        return
-
-    user = db.get_user(chat_id)
-    caption = (
-        "🆘 Yangi support xabari\n\n"
-        f"👤 {user['full_name']} (@{user['username']})\n"
-        f"🆔 Chat ID: {chat_id}\n\n"
-        f"✉️ Xabar:\n{text}\n\n"
-        "↩️ Javob berish uchun shu xabarga Reply qiling."
-    )
-
-    support_id = db.insert_support_thread(chat_id, message.message_id, text)
-
-    # Barcha adminlarga yuboramiz -- qaysi biri birinchi Reply qilsa, o'sha javob beradi
-    for admin_id in db.get_all_admin_ids():
-        try:
-            sent = await context.bot.send_message(chat_id=admin_id, text=caption)
-            db.add_support_notification(support_id, admin_id, sent.message_id)
-        except Exception as e:
-            logger.warning("Adminga (%s) support xabari yuborilmadi: %s", admin_id, e)
-
-    db.set_state(chat_id, None)
-    await message.reply_text("Savolingiz qabul qilindi ✅\nTez orada operator javob beradi.")
-
-
-async def handle_cargo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    code = (message.text or "").strip().upper()
-
-    db.set_state(chat_id, None)
-
-    if not code:
-        await message.reply_text("Iltimos, yuk kuzatuv kodini matn ko'rinishida kiriting.")
-        return
-
-    shipment = db.get_shipment_by_code(code)
-
-    if shipment is None:
-        await message.reply_text(
-            "❌ Bunday kuzatuv kodi topilmadi. Kodni to'g'ri kiritganingizga ishonch hosil qiling."
-        )
-        return
-
-    if shipment["user_chat_id"] != chat_id:
-        await message.reply_text("❌ Bu kod sizga tegishli emas.")
-        return
-
-    status_label = CARGO_STATUSES.get(shipment["status"], shipment["status"])
-    await message.reply_text(
-        f"📦 Yuk ma'lumoti\n\n"
-        f"🔖 Kod: {shipment['tracking_code']}\n"
-        f"📝 Tavsif: {shipment['description']}\n"
-        f"📍 Joriy holat: {status_label}"
-    )
-
-
-async def handle_transfer_recipient(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    wallet_id = (message.text or "").strip()
-
-    if not wallet_id.isdigit() or len(wallet_id) != 6:
-        await message.reply_text("Iltimos, 6 xonali Wallet ID kiriting. Qaytadan urinib ko'ring:")
-        return
-
-    recipient = db.get_user_by_wallet_id(wallet_id)
-
-    if recipient is None or recipient["is_registered"] != 1:
-        await message.reply_text(
-            "❌ Bunday Wallet ID topilmadi. Wallet ID'ni tekshirib, qaytadan kiriting:"
-        )
-        return
-
-    recipient_id = recipient["chat_id"]
-
-    if recipient_id == chat_id:
-        await message.reply_text("O'zingizga pul o'tkaza olmaysiz. Boshqa Wallet ID kiriting:")
-        return
-
-    db.set_state(chat_id, f"waiting_transfer_amount:{recipient_id}")
-    await message.reply_text(
-        f"👤 Qabul qiluvchi: {recipient['full_name']}\n\nNecha so'm o'tkazmoqchisiz?"
-    )
-
-
-async def handle_transfer_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, recipient_id: int) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    text = (message.text or "").strip().replace(" ", "")
-
-    db.set_state(chat_id, None)
-
-    try:
-        amount = float(text)
-    except ValueError:
-        await message.reply_text("Summa faqat raqam bo'lishi kerak.")
-        return
-
-    if amount <= 0:
-        await message.reply_text("Summa musbat son bo'lishi kerak.")
-        return
-
-    sender_balance = db.get_balance(chat_id)
-    if sender_balance < amount:
-        await message.reply_text(
-            f"❌ Hamyoningizda yetarli mablag' yo'q.\nJoriy balans: {sender_balance:,.0f} so'm".replace(",", " ")
-        )
-        return
-
-    commission = round(amount * TRANSFER_COMMISSION_RATE)
-    net_amount = amount - commission
-
-    success = db.transfer_balance(chat_id, recipient_id, amount, commission)
-    if not success:
-        await message.reply_text("❌ O'tkazma amalga oshmadi. Balansingizni tekshirib, qaytadan urinib ko'ring.")
-        return
-
-    sender = db.get_user(chat_id)
-    recipient = db.get_user(recipient_id)
-
-    await message.reply_text(
-        (
-            f"✅ O'tkazma muvaffaqiyatli amalga oshdi!\n\n"
-            f"👤 Qabul qiluvchi: {recipient['full_name']}\n"
-            f"💰 Yuborilgan summa: {amount:,.0f} so'm\n"
-            f"💸 Komissiya ({TRANSFER_COMMISSION_RATE * 100:.0f}%): {commission:,.0f} so'm\n"
-            f"📥 Qabul qiluvchi oldi: {net_amount:,.0f} so'm\n\n"
-            f"Joriy balansingiz: {db.get_balance(chat_id):,.0f} so'm"
-        ).replace(",", " ")
-    )
-
-    try:
-        await context.bot.send_message(
-            chat_id=recipient_id,
-            text=(
-                f"💸 Sizga pul o'tkazma keldi!\n\n"
-                f"👤 Kimdan: {sender['full_name']}\n"
-                f"💰 Summa: {net_amount:,.0f} so'm\n\n"
-                f"Joriy balansingiz: {db.get_balance(recipient_id):,.0f} so'm"
-            ).replace(",", " "),
-        )
-    except Exception as e:
-        logger.warning("Qabul qiluvchiga (%s) o'tkazma haqida xabar yuborilmadi: %s", recipient_id, e)
-
-
-async def handle_address_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    lang = db.get_language(chat_id)
-    address = (message.text or "").strip()
-
-    if len(address) < 5:
-        await message.reply_text(
-            "Iltimos, to'liqroq manzil kiriting (kamida shahar va ko'cha nomi):"
-            if lang == "uz"
-            else t(lang, "ask_address")
-        )
-        return
-
-    db.save_address(chat_id, address)
-    db.set_state(chat_id, None)
-
-    await message.reply_text(t(lang, "address_saved"))
-
-    user = db.get_user(chat_id)
-    await message.reply_text(
-        build_profile_text(lang, user),
-        parse_mode="HTML",
-        reply_markup=profile_keyboard(lang),
-    )
-
-
-
-
-async def handle_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    code = (message.text or "").strip().upper()
-
-    db.set_state(chat_id, None)
-
-    if not code:
-        await message.reply_text("Iltimos, promo kodni matn ko'rinishida kiriting.")
-        return
-
-    promo = db.get_active_promo(code)
-    if promo is None:
-        await message.reply_text("❌ Bunday promo kod topilmadi yoki u faol emas.")
-        return
-
-    if db.has_used_promo(promo["id"], chat_id):
-        await message.reply_text("⚠️ Siz bu promo koddan avval foydalangansiz.")
-        return
-
-    if promo["code_type"] == "discount":
-        db.set_discount(chat_id, promo["amount"])
-        db.redeem_promo(promo["id"], chat_id, 0)  # promo_usage'ga belgilash uchun, balansga ta'sir qilmaydi
-        await message.reply_text(
-            f"✅ Promo kod muvaffaqiyatli qo'llanildi!\n"
-            f"🏷 Sizga {promo['amount']:.0f}% chegirma faollashtirildi.\n\n"
-            "Bu chegirma keyingi xaridlaringizda avtomatik qo'llanadi."
-        )
-        return
-
-    db.redeem_promo(promo["id"], chat_id, promo["amount"])
-    new_balance = db.get_balance(chat_id)
-
-    await message.reply_text(
-        "✅ Promo kod muvaffaqiyatli qo'llanildi!\n"
-        f"💰 Balansingizga {promo['amount']:,.0f} so'm qo'shildi.\n\n"
-        f"Joriy balans: {new_balance:,.0f} so'm".replace(",", " ")
-    )
-
-
-async def handle_admin_support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Istalgan admin support xabariga Reply qilganda javobni foydalanuvchiga yetkazadi."""
-    message = update.effective_message
-    admin_chat_id = update.effective_chat.id
-    replied_to_id = message.reply_to_message.message_id
-
-    notification = db.get_support_notification(admin_chat_id, replied_to_id)
-    if notification is None:
-        return False  # oddiy reply, support tizimiga aloqasi yo'q
-
-    support_thread = db.get_support_thread(notification["support_id"])
-    if support_thread is None:
-        return False
-
-    reply_text = (message.text or "").strip()
-    if not reply_text:
-        await message.reply_text("Iltimos, javobni matn ko'rinishida yuboring.")
-        return True
-
-    if support_thread["is_answered"] == 1:
-        await message.reply_text("ℹ️ Bu savolga boshqa admin allaqachon javob bergan.")
-        return True
-
-    await context.bot.send_message(
-        chat_id=support_thread["user_chat_id"], text=f"🎧 Support javobi:\n\n{reply_text}"
-    )
-    db.mark_support_answered(support_thread["id"])
-    await message.reply_text("✅ Javobingiz foydalanuvchiga yuborildi.")
-
-    return True
-
-
-async def handle_direct_message(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, target_chat_id: int
-) -> None:
-    """Admin muayyan bir mijozga (masalan chek yuborgan foydalanuvchiga) xabar yozganda ishlaydi."""
-    message = update.effective_message
-    admin_chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
-
-    db.set_state(admin_chat_id, None)
-
-    if not text:
-        await message.reply_text("Xabar bo'sh bo'lmasligi kerak.")
-        return
-
-    try:
-        await context.bot.send_message(chat_id=target_chat_id, text=f"✉️ Xabar:\n\n{text}")
-        await message.reply_text("✅ Xabar yuborildi.")
-    except Exception as e:
-        logger.warning("Foydalanuvchiga (%s) xabar yuborilmadi: %s", target_chat_id, e)
-        await message.reply_text("❌ Xabar yuborilmadi -- foydalanuvchi botni bloklagan bo'lishi mumkin.")
-
-
-async def handle_admin_category_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    raw = (message.text or "").strip()
-
-    if not raw:
-        await message.reply_text("Iltimos, kategoriya nomini matn ko'rinishida yozing.")
-        return
-
-    key = slugify(raw)
-    if db.get_category(key) is not None:
-        await message.reply_text("Bunday kategoriya allaqachon mavjud. Boshqa nom kiriting:")
-        return
-
-    context.user_data["new_category_key"] = key
-    db.set_state(chat_id, "admin_waiting_category_label")
-    await message.reply_text(
-        "Endi shu kategoriya foydalanuvchilarga qanday ko'rinsin? (emoji bilan yozsangiz chiroyli bo'ladi)\n"
-        "Masalan: 💎 TON Kripta"
-    )
-
-
-async def handle_admin_category_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    label = (message.text or "").strip()
-
-    if not label:
-        await message.reply_text("Iltimos, nomni matn ko'rinishida yozing.")
-        return
-
-    key = context.user_data.get("new_category_key")
-    if not key:
-        db.set_state(chat_id, None)
-        await message.reply_text("Xatolik yuz berdi, qaytadan urinib ko'ring: /addcategory")
-        return
-
-    db.create_category(key, label)
-    db.set_state(chat_id, None)
-    context.user_data.pop("new_category_key", None)
-
-    await message.reply_text(
-        f"✅ Yangi kategoriya qo'shildi: {label}\n\n"
-        "Endi shu turkumga mahsulot qo'shamizmi?",
-        reply_markup=admin_product_category_keyboard(),
-    )
-
-
-async def handle_admin_product_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    name = (message.text or "").strip()
-
-    if not name:
-        await message.reply_text("Iltimos, mahsulot nomini matn ko'rinishida yozing.")
-        return
-
-    context.user_data["new_product_label"] = name
-    db.set_state(chat_id, "admin_waiting_product_price")
-    await message.reply_text("Endi narxini kiriting (faqat raqam, so'mda). Masalan: 45000")
-
-
-async def handle_admin_product_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat_id = update.effective_chat.id
-    price_text = (message.text or "").strip().replace(" ", "")
-
-    try:
-        price = float(price_text)
-    except ValueError:
-        await message.reply_text("Narx faqat raqam bo'lishi kerak. Masalan: 45000. Qaytadan kiriting:")
-        return
-
-    if price <= 0:
-        await message.reply_text("Narx musbat son bo'lishi kerak. Qaytadan kiriting:")
-        return
-
-    category = context.user_data.get("new_product_category", "premium")
-    label = context.user_data.get("new_product_label", "Mahsulot")
-
-    key = f"{category}_{slugify(label)}"
-    if db.get_product(key) is not None:
-        key = f"{key}_{int(price)}"  # to'qnashuv bo'lsa, narxni ham qo'shib key'ni noyob qilamiz
-
-    db.upsert_product(key, category, label, price)
-
-    db.set_state(chat_id, None)
-    context.user_data.pop("new_product_category", None)
-    context.user_data.pop("new_product_label", None)
-
-    cat = db.get_category(category)
-    cat_label = cat["label"] if cat else category
-    await message.reply_text(
-        f"✅ Mahsulot qo'shildi!\n\n{cat_label}\n📝 {label}\n💰 {price:,.0f} so'm".replace(",", " ")
-    )
-
-
-async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin 'Barchaga xabar yuborish' tugmasidan keyin yozgan matnni hamma foydalanuvchiga yuboradi."""
-    message = update.effective_message
-    admin_chat_id = update.effective_chat.id
-    text = (message.text or "").strip()
-
-    db.set_state(admin_chat_id, None)
-
-    if not text:
-        await message.reply_text("Xabar bo'sh bo'lmasligi kerak. Qaytadan urinib ko'ring.")
-        return
-
-    chat_ids = db.get_all_registered_chat_ids()
-    sent_count = 0
-    failed_count = 0
-
-    status_message = await message.reply_text(f"📢 Yuborilmoqda... (0/{len(chat_ids)})")
-
-    for i, target_chat_id in enumerate(chat_ids, start=1):
-        try:
-            await context.bot.send_message(chat_id=target_chat_id, text=text)
-            sent_count += 1
-        except Exception as e:
-            failed_count += 1
-            logger.warning("Broadcast xabari %s ga yuborilmadi: %s", target_chat_id, e)
-
-        # Har 20 ta xabardan keyin progressni yangilaymiz (juda ko'p edit chaqirmaslik uchun)
-        if i % 20 == 0:
-            try:
-                await status_message.edit_text(f"📢 Yuborilmoqda... ({i}/{len(chat_ids)})")
-            except Exception:
-                pass
-
-    await status_message.edit_text(
-        f"✅ Xabar yuborish yakunlandi!\n\nYuborildi: {sent_count}\nXato: {failed_count}"
-    )
-
-
-# =======================================================================
-# Inline tugmalar (callback_query)
-# =======================================================================
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    data = query.data
-    chat_id = query.message.chat_id
-
-    if data.startswith("message_user_"):
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        target_chat_id = int(data.replace("message_user_", ""))
-        db.set_state(chat_id, f"waiting_direct_message:{target_chat_id}")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✉️ Foydalanuvchi ({target_chat_id}) ga yuboriladigan xabarni yozing:",
-        )
-        return
-
-    if data.startswith("approve_payment_") or data.startswith("reject_payment_"):
-        await handle_payment_decision(update, context)
-        return
-
-    if data.startswith("rate_"):
-        _, payment_id_str, stars_str = data.split("_")
-        db.add_rating(chat_id, int(payment_id_str), int(stars_str))
-        await query.answer(text="Rahmat! 🙏")
-        try:
-            await query.edit_message_text(f"⭐ Baholaganingiz uchun rahmat! Sizning bahoyingiz: {'⭐' * int(stars_str)}")
-        except Exception:
-            pass
-        return
-
-    if data == "admin_broadcast":
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        db.set_state(chat_id, "waiting_broadcast_message")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="📢 Barcha foydalanuvchilarga yuboriladigan xabar matnini yozing:",
-        )
-        return
-
-    if data == "admin_addproduct":
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id, text="Qaysi turkumga qo'shmoqchisiz?", reply_markup=admin_product_category_keyboard()
-        )
-        return
-
-    if data == "admin_addcategory":
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        db.set_state(chat_id, "admin_waiting_category_key")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Yangi kategoriya uchun ichki nom (KEY) kiriting, masalan: ton",
-        )
-        return
-
-    if data.startswith("admin_addproduct_cat_"):
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        category = data.replace("admin_addproduct_cat_", "")
-        context.user_data["new_product_category"] = category
-        db.set_state(chat_id, "admin_waiting_product_name")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id, text="Mahsulot nomini kiriting (masalan: Telegram Premium 6 oy):"
-        )
-        return
-
-    if data == "admin_addshipment":
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        db.set_state(chat_id, "admin_waiting_shipment_chatid")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id, text="Mijozning Chat ID raqamini kiriting:"
-        )
-        return
-
-    if data == "admin_stats":
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        await query.answer()
-        stats = db.get_stats()
-        avg_rating, rating_count = db.get_rating_stats()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "📊 Statistika\n\n"
-                f"👥 Ro'yxatdan o'tganlar: {stats['total_users']}\n"
-                f"⏳ Kutilayotgan cheklar: {stats['pending_payments']}\n"
-                f"✅ Tasdiqlangan to'lovlar: {stats['approved_payments']}\n"
-                f"💰 Tasdiqlangan summa: {stats['approved_sum']:,.0f} so'm\n"
-                f"📦 Jami yuklar: {stats['total_shipments']}\n"
-                f"⭐ O'rtacha reyting: {avg_rating:.1f} ({rating_count} ta baho)\n"
-            f"💸 O'tkazmalardan komissiya: {stats['total_commission']:,.0f} so'm".replace(",", " ")
-            ).replace(",", " "),
-        )
-        return
-
-    if data == "accept_terms":
-        lang = db.get_language(chat_id)
-        db.set_terms_accepted(chat_id)
-        await query.answer(text="Rahmat! ✅")
-        user = db.get_user(chat_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=t(lang, "welcome_back", name=html.escape(user["full_name"] or "")),
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(lang),
-        )
-        return
-
-    if data == "menu_profile":
-        lang = db.get_language(chat_id)
-        await query.answer()
-        user = db.get_user(chat_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=build_profile_text(lang, user),
-            parse_mode="HTML",
-            reply_markup=profile_keyboard(lang),
-        )
-        return
-
-    if data == "edit_address":
-        lang = db.get_language(chat_id)
-        db.set_state(chat_id, "waiting_address")
-        await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text=t(lang, "ask_address"))
-        return
-
-    if data == "menu_wallet":
-        # Eski tugma -- endi hamyon Profil ichida, shunga yo'naltiramiz
-        lang = db.get_language(chat_id)
-        await query.answer()
-        user = db.get_user(chat_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=build_profile_text(lang, user),
-            parse_mode="HTML",
-            reply_markup=profile_keyboard(lang),
-        )
-        return
-
-    if data == "wallet_transfer":
-        db.set_state(chat_id, "waiting_transfer_recipient")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "💸 Pul o'tkazish\n\n"
-                f"Komissiya: {TRANSFER_COMMISSION_RATE * 100:.0f}%\n\n"
-                "Qabul qiluvchining <b>Wallet ID</b>'sini kiriting:\n"
-                "(u o'z Wallet ID'sini Profil bo'limidan ko'rib, sizga yuborishi mumkin)"
-            ),
-            parse_mode="HTML",
-        )
-        return
-
-    if data.startswith("lang_"):
-        lang = data.replace("lang_", "")
-        user = db.get_user(chat_id)
-        await query.answer()
-
-        if user is not None and user["is_registered"] == 1:
-            # Ro'yxatdan o'tgan foydalanuvchi tilni o'zgartiryapti
-            db.set_language(chat_id, lang)
-            await context.bot.send_message(chat_id=chat_id, text=t(lang, "language_changed"))
-            await context.bot.send_message(
-                chat_id=chat_id, text=t(lang, "main_menu_prompt"), parse_mode="HTML", reply_markup=main_menu_keyboard(lang)
-            )
-        else:
-            # Ro'yxatdan o'tish jarayonida birinchi marta til tanlanyapti
-            await handle_language_selected(update, context, chat_id, lang)
-        return
-
-    if data == "menu_language":
-        await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text=t(db.get_language(chat_id), "choose_language"), reply_markup=language_keyboard())
-        return
-
-    if data == "menu_referral":
-        lang = db.get_language(chat_id)
-        await query.answer()
-        link = f"https://t.me/{BOT_USERNAME}?start=ref{chat_id}"
-        count = db.get_referral_count(chat_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=t(lang, "referral_text", bonus=f"{REFERRAL_BONUS:,.0f}".replace(",", " "), link=link, count=count),
-            parse_mode="HTML",
-        )
-        return
-
-    if data == "menu_orders":
-        lang = db.get_language(chat_id)
-        await query.answer()
-        payments = db.get_user_payments(chat_id)
-        shipments = db.get_user_shipments(chat_id)
-
-        if not payments and not shipments:
-            await context.bot.send_message(chat_id=chat_id, text=t(lang, "orders_empty"))
-            return
-
-        lines = [t(lang, "orders_header"), ""]
-        status_icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
-        for p in payments:
-            product = f" — {html.escape(p['product_label'])}" if p["product_label"] else ""
-            lines.append(f"{status_icons.get(p['status'], '•')} #{p['id']}{product} ({p['status']})")
-
-        if shipments:
-            lines.append("")
-            for s in shipments:
-                lines.append(
-                    f"📦 {html.escape(s['tracking_code'])} — {CARGO_STATUSES.get(s['status'], s['status'])}"
-                )
-
-        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
-        return
-
-    if data == "menu_cargo":
-        db.set_state(chat_id, "waiting_cargo_code")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id, text="📦 Yuk kuzatuv kodingizni kiriting:"
-        )
-        return
-
-    if data.startswith("cargo_status_"):
-        if not db.is_admin(chat_id):
-            await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-            return
-
-        _, _, shipment_id_str, status_key = data.split("_", 3)
-        shipment_id = int(shipment_id_str)
-
-        shipment = db.get_shipment(shipment_id)
-        if shipment is None:
-            await query.answer(text="Yuk topilmadi.", show_alert=True)
-            return
-
-        db.update_shipment_status(shipment_id, status_key)
-        await query.answer(text="✅ Holat yangilandi.")
-
-        try:
-            await query.edit_message_text(
-                f"📦 Kod: {shipment['tracking_code']}\n"
-                f"📝 Tavsif: {shipment['description']}\n"
-                f"🆔 Mijoz: {shipment['user_chat_id']}\n"
-                f"📍 Joriy holat: {CARGO_STATUSES[status_key]}\n\n"
-                "Statusni yangilash uchun tugmani bosing:",
-                reply_markup=cargo_admin_keyboard(shipment_id, status_key),
-            )
-        except Exception:
-            pass
-
-        try:
-            await context.bot.send_message(
-                chat_id=shipment["user_chat_id"],
-                text=(
-                    f"{CARGO_STATUS_MESSAGES[status_key]}\n\n"
-                    f"🔖 Kuzatuv kodi: {shipment['tracking_code']}\n"
-                    f"📝 Tavsif: {shipment['description']}"
-                ),
-            )
-        except Exception as e:
-            logger.warning("Mijozga (%s) yuk holati haqida xabar yuborilmadi: %s", shipment["user_chat_id"], e)
-
-        return
-
-    if data == "menu_back":
-        lang = db.get_language(chat_id)
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id, text=t(lang, "main_menu_prompt"), parse_mode="HTML", reply_markup=main_menu_keyboard(lang)
-        )
-        return
-
-    if data == "menu_store":
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="🛍 Qaysi birini xohlaysiz?",
-            reply_markup=store_category_keyboard(),
-        )
-        return
-
-    if data.startswith("store_cat_"):
-        category = data.replace("store_cat_", "")
-        cat = db.get_category(category)
-        products = db.get_active_products(category)
-        await query.answer()
-
-        if not products:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="Hozircha bu bo'limda mahsulotlar mavjud emas. Keyinroq qayta urinib ko'ring.",
-                reply_markup=store_category_keyboard(),
-            )
-            return
-
-        title = f"{cat['label'] if cat else category} tariflari:"
-        await context.bot.send_message(
-            chat_id=chat_id, text=title, reply_markup=product_list_keyboard(products, category)
-        )
-        return
-
-    if data.startswith("apply_discount_yes:") or data.startswith("apply_discount_no:"):
-        if db.has_pending_payment(chat_id):
-            await query.answer(
-                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
-            )
-            return
-
-        payload = data.split(":", 1)[1]
-        final_s, orig_s, pct_s = payload.split(":")
-        original_amount = float(orig_s)
-
-        if data.startswith("apply_discount_yes:"):
-            final_amount = float(final_s)
-            discount_pct = float(pct_s)
-            # Chegirma bir martalik -- ishlatilgach foydalanuvchidan olib tashlaymiz
-            db.set_discount(chat_id, 0)
-            confirm_text = (
-                f"✅ Chegirma qo'llanildi!\n💳 {original_amount:,.0f} so'm → {final_amount:,.0f} so'm (-{discount_pct:.0f}%)\n\n"
-                "Endi chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
-            ).replace(",", " ")
-        else:
-            final_amount = original_amount
-            discount_pct = 0
-            confirm_text = (
-                f"💳 To'lov summasi: {original_amount:,.0f} so'm (chegirmasiz)\n\n"
-                "Chegirmangiz keyingi to'lovingiz uchun saqlanib qoladi.\n"
-                "Endi chekingizni rasm ko'rinishida yuboring va tasdiqlanishini kuting. 🧾"
-            ).replace(",", " ")
-
-        db.set_state(chat_id, f"waiting_payment_photo_amt:{round(final_amount)}:{round(original_amount)}:{discount_pct:.0f}")
-        await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text=confirm_text)
-        return
-
-    if data.startswith("buy_product_"):
-        product_key = data.replace("buy_product_", "")
-        product = db.get_product(product_key)
-
-        if product is None or product["is_active"] != 1:
-            await query.answer(text="Bu mahsulot endi mavjud emas.", show_alert=True)
-            return
-
-        if db.has_pending_payment(chat_id):
-            await query.answer(
-                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
-            )
-            return
-
-        db.set_state(chat_id, f"waiting_recipient_info:{product_key}")
-        await query.answer()
-
-        # Eslatma: chegirma faqat umumiy "To'lov" (veb-sayt) bo'limiga tegishli,
-        # Telegram Premium / Stars mahsulotlariga chegirma qo'llanilmaydi.
-        price_line = f"Narxi: {product['price']:,.0f} so'm".replace(",", " ")
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"Siz tanladingiz: {html.escape(product['label'])}\n"
-                f"{price_line}\n\n"
-                "👤 Kimga? Qabul qiluvchining Telegram username'i (@...) yoki telefon raqamini yozing:"
-            ),
-            parse_mode="HTML",
-        )
-        return
-
-    if data == "menu_payment":
-        if db.has_pending_payment(chat_id):
-            await query.answer(
-                text="Sizda hali tasdiqlanmagan chek bor. Iltimos, natijani kuting.", show_alert=True
-            )
-            return
-        db.set_state(chat_id, "waiting_payment_amount")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "🧾 To'lov\n\n"
-                "ℹ️ Diqqat: to'lovga faqat mini web-ilova orqali berilgan buyurtmalarning cheklari qabul qilinadi.\n\n"
-                "Avval veb-saytda qancha summaga to'lov qilgan bo'lsangiz, o'sha summani so'm ko'rinishida yozib yuboring (masalan: 150000):"
-            ),
-        )
-
-    elif data == "menu_support":
-        db.set_state(chat_id, "waiting_support_message")
-        await query.answer()
-        await context.bot.send_message(
-            chat_id=chat_id, text="Savolingizni yozing, operatorimiz tez orada javob beradi. ✍️"
-        )
-
-    elif data == "menu_promo":
-        db.set_state(chat_id, "waiting_promo_code")
-        await query.answer()
-        await context.bot.send_message(chat_id=chat_id, text=t(db.get_language(chat_id), "promo_prompt"))
-
-    else:
-        await query.answer(text="Noma'lum amal.")
-
-
-async def handle_payment_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    data = query.data
-    chat_id = query.message.chat_id
-
-    if not db.is_admin(chat_id):
-        await query.answer(text="Bu amal faqat admin uchun.", show_alert=True)
-        return
-
-    is_approve = data.startswith("approve_payment_")
-    payment_id = int(data.replace("approve_payment_", "").replace("reject_payment_", ""))
-
-    payment = db.get_payment(payment_id)
-    if payment is None:
-        await query.answer(text="To'lov topilmadi.", show_alert=True)
-        return
-
-    if payment["status"] != "pending":
-        await query.answer(text="Bu to'lov bo'yicha qaror allaqachon qabul qilingan.", show_alert=True)
-        return
-
-    new_status = "approved" if is_approve else "rejected"
-    db.update_payment_status(payment_id, new_status)
-
-    product_note = f" ({payment['product_label']})" if payment["product_label"] else ""
-    user_text = (
-        f"✅ To'lovingiz qabul qilindi{product_note}. Rahmat!"
-        if is_approve
-        else f"❌ Afsuski, to'lovingiz{product_note} rad etildi. Savolingiz bo'lsa, Support bo'limiga murojaat qiling."
-    )
-    await context.bot.send_message(chat_id=payment["user_chat_id"], text=user_text)
-
-    if is_approve:
-        try:
-            await context.bot.send_message(
-                chat_id=payment["user_chat_id"],
-                text="⭐ Xizmatimizni baholab o'tasizmi?",
-                reply_markup=rating_keyboard(payment_id),
-            )
-        except Exception as e:
-            logger.warning("Reyting so'rovi (%s) yuborilmadi: %s", payment["user_chat_id"], e)
-
-    # Boshqa qaysi adminlarga ham shu chek yuborilgan bo'lsa, ularning xabarini ham yangilaymiz
-    status_label = "✅ TASDIQLANDI" if is_approve else "❌ RAD ETILDI"
-    decided_by = query.from_user.full_name if query.from_user else "Admin"
-
-    for notif in db.get_payment_notifications(payment_id):
-        try:
-            old_caption = ""
-            if notif["admin_chat_id"] == chat_id and query.message.caption:
-                old_caption = query.message.caption
-            await context.bot.edit_message_caption(
-                chat_id=notif["admin_chat_id"],
-                message_id=notif["message_id"],
-                caption=f"#to'lov_{payment_id}\n\n{status_label}\n(qaror: {decided_by})"
-                if not old_caption
-                else f"{old_caption}\n\n{status_label}\n(qaror: {decided_by})",
-            )
-        except Exception as e:
-            logger.warning("Admin xabarini yangilab bo'lmadi: %s", e)
-
-    await query.answer(text="Qabul qilindi.")
-
-
-# =======================================================================
-# Ishga tushirish
-# =======================================================================
-def main() -> None:
+async def main():
     db.init_db()
-
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CommandHandler("stats", show_stats))
-    application.add_handler(CommandHandler("addpromo", addpromo))
-    application.add_handler(CommandHandler("addadmin", addadmin))
-    application.add_handler(CommandHandler("removeadmin", removeadmin))
-    application.add_handler(CommandHandler("admins", list_admins))
-    application.add_handler(CommandHandler("balance", check_balance))
-    application.add_handler(CommandHandler("addbalance", add_balance_command))
-    application.add_handler(CommandHandler("removebalance", remove_balance_command))
-    application.add_handler(CommandHandler("addpremium", add_premium_product))
-    application.add_handler(CommandHandler("addstars", add_stars_product))
-    application.add_handler(CommandHandler("addcategory", add_category_command))
-    application.add_handler(CommandHandler("adddiscount", add_discount_code))
-    application.add_handler(CommandHandler("setdiscount", set_discount_command))
-    application.add_handler(CommandHandler("setdiscountmin", set_discount_min_command))
-    application.add_handler(CommandHandler("removeproduct", remove_product))
-    application.add_handler(CommandHandler("products", list_products))
-    application.add_handler(CommandHandler("addshipment", add_shipment))
-    application.add_handler(CommandHandler("cargo", open_cargo_panel))
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-
-    logger.info("Bot ishga tushdi (polling)...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await start_http_server()
+    logger.info("Bot polling boshlandi...")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
