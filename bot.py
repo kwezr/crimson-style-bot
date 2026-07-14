@@ -1784,21 +1784,11 @@ def build_web_app() -> web.Application:
 # ISHGA TUSHIRISH: bot polling + HTTP server bir vaqtda ishlaydi
 # ------------------------------------------------------------------
 
-async def start_http_server():
-    app = build_web_app()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, HTTP_HOST, HTTP_PORT)
-    await site.start()
-    logger.info(f"HTTP server ishga tushdi: http://{HTTP_HOST}:{HTTP_PORT}/app")
 
 
 async def main():
+    await bot.delete_webhook(drop_pending_updates=True) # Mana bu qatorni birinchi qiling
     db.init_db()
-    
     logger.info("Bot polling boshlandi...")
-    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
