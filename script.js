@@ -42,6 +42,10 @@ const oldPriceEl = document.getElementById("old-price");
 const promoInput = document.getElementById("promo-input");
 const promoMessageEl = document.getElementById("promo-message");
 const applyPromoBtn = document.getElementById("apply-promo-btn");
+const phoneInput = document.getElementById("phone-input");
+const phoneMessageEl = document.getElementById("phone-message");
+const paymentCardsBlock = document.getElementById("payment-cards-block");
+const paymentCardsListEl = document.getElementById("payment-cards-list");
 const checkoutBtn = document.getElementById("checkout-btn");
 const toastEl = document.getElementById("toast");
 
@@ -57,6 +61,37 @@ async function loadProducts() {
     PRODUCTS = [];
   }
   renderProducts();
+}
+
+// ------------------------------------------------------------------
+// 1b) TO'LOV KARTALARINI YUKLASH (checkout paneli uchun)
+// ------------------------------------------------------------------
+async function loadPaymentCards() {
+  try {
+    const res = await fetch(`${API_BASE}/api/payment-cards`);
+    const cards = await res.json();
+    if (Array.isArray(cards) && cards.length > 0) {
+      paymentCardsListEl.innerHTML = cards
+        .map((c) => {
+          const meta = [c.holder_name, c.bank_name].filter(Boolean).join(" · ");
+          return `<div class="card-item">${c.card_number}${meta ? `<span class="card-meta">${meta}</span>` : ""}</div>`;
+        })
+        .join("");
+      paymentCardsBlock.style.display = "block";
+    } else {
+      paymentCardsBlock.style.display = "none";
+    }
+  } catch (err) {
+    console.error("To'lov kartalarini yuklashda xatolik:", err);
+    paymentCardsBlock.style.display = "none";
+  }
+}
+
+// Oddiy telefon raqami tekshiruvi: kamida 9 ta raqamdan iborat bo'lishi kerak
+// (masalan +998901234567 yoki 901234567 ko'rinishida kiritish mumkin)
+function isValidPhone(value) {
+  const digits = value.replace(/\D/g, "");
+  return digits.length >= 9;
 }
 
 function renderProducts() {
@@ -244,6 +279,17 @@ checkoutBtn.addEventListener("click", async () => {
   const items = getCartItems();
   if (!items.length) return;
 
+  const phone = phoneInput.value.trim();
+  if (!isValidPhone(phone)) {
+    phoneMessageEl.textContent = "❗️ Telefon raqamingizni to'g'ri kiriting (masalan +998901234567)";
+    phoneInput.classList.add("err");
+    phoneInput.focus();
+    tg?.HapticFeedback?.notificationOccurred("error");
+    return;
+  }
+  phoneMessageEl.textContent = "";
+  phoneInput.classList.remove("err");
+
   // Botni Telegram ilovasi ichida ochish shart - initData shu yerdan keladi
   // va server tomonda foydalanuvchini tasdiqlash uchun ishlatiladi.
   if (!tg || !tg.initData) {
@@ -257,6 +303,7 @@ checkoutBtn.addEventListener("click", async () => {
   const orderPayload = {
     items: items.map((i) => ({ id: i.id, size: i.size, qty: i.qty })),
     promo_code: appliedPromo ? appliedPromo.code : null,
+    phone: phone,
     init_data: tg.initData,
   };
 
@@ -279,6 +326,7 @@ checkoutBtn.addEventListener("click", async () => {
       cart = {};
       appliedPromo = null;
       promoInput.value = "";
+      phoneInput.value = "";
       setPromoMessage("", "");
       renderProducts();
       updateCartBar();
@@ -289,6 +337,8 @@ checkoutBtn.addEventListener("click", async () => {
       setTimeout(() => tg?.close(), 900);
     } else if (data.error === "auth_failed") {
       showToast("❗️ Foydalanuvchini tasdiqlab bo'lmadi. Botni qayta oching.");
+    } else if (data.error === "phone_required") {
+      showToast("❗️ Telefon raqamingizni kiriting.");
     } else {
       throw new Error(data.error || "unknown_error");
     }
@@ -409,4 +459,5 @@ modalAddBtn.addEventListener("click", () => {
 // ISHGA TUSHIRISH
 // ------------------------------------------------------------------
 loadProducts();
+loadPaymentCards();
 updateCartBar();
