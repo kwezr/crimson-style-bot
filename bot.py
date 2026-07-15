@@ -26,11 +26,39 @@ import json
 import sqlite3
 import logging
 import re
-import asyncio
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()  # loyiha papkasidagi .env faylini o'qiydi
+
+
+# ---------------------------------------------------------------------------
+# RAILWAY UCHUN HEALTH-CHECK SERVER
+# ---------------------------------------------------------------------------
+# Railway "web" turidagi xizmatlarda PORT ochilishini kutadi. Bizning bot esa
+# Telegram bilan polling orqali ishlaydi va hech qanday HTTP port ochmaydi —
+# shu sababli Railway botni "ishlamayapti" deb doimiy qayta ishga tushiradi
+# (restart loop, juda ko'p xato logi). Shuni oldini olish uchun fon rejimida
+# (background thread) minimal HTTP server ochamiz, u faqat "OK" javob beradi.
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Sensei AI ishlayapti")
+
+    def log_message(self, format, *args):
+        pass  # health-check so'rovlarini log bilan to'ldirmaslik uchun
+
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logging.getLogger("sensei_ai").info(f"Health-check server {port}-portda ishga tushdi.")
 
 from telegram import (
     Update,
@@ -57,7 +85,7 @@ from anthropic import Anthropic
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", "0"))
-DB_PATH = os.path.join(os.path.dirname(__file__), "sensei.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "sensei.db"))
 
 # Tez va arzon model — savol generatsiya va qisqa suhbat uchun yetarli
 AI_MODEL = "claude-haiku-4-5-20251001"
@@ -467,16 +495,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ---------------------------------------------------------------------------
 
-async def main():
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        raise SystemExit(
+            "TELEGRAM_BOT_TOKEN topilmadi. .env faylini yoki Railway Variables'ni tekshiring."
+        )
+    start_health_server()
     init_db()
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        logger.error("Token topilmadi!")
-        return
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app = Application.builder().token(token).build()
-
-        reg_conv = ConversationHandler(
+    reg_conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
@@ -485,8 +513,8 @@ async def main():
         },
         fallbacks=[],
     )
+
     app.add_handler(reg_conv)
-        # Barcha qolgan handlerlar
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("stat", cmd_stat))
     app.add_handler(CommandHandler("reset", cmd_reset))
@@ -495,23 +523,9 @@ async def main():
     app.add_handler(CallbackQueryHandler(quiz_answer, pattern=r"^quiz:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    logger.info("Sensei AI ishga tushirilmoqda...")
-    
-    # Botni ishga tushirish
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    # Bot serverda o'chib qolmasligi uchun
-    await asyncio.Event().wait()
+    logger.info("Sensei AI ishga tushdi.")
+    app.run_polling()
 
-    logger.info("Sensei AI ishga tushirilmoqda...")
-    
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
