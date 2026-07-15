@@ -15,7 +15,7 @@ O'RNATISH:
     pip install python-telegram-bot==21.* anthropic
 
 ISHGA TUSHIRISH:
-    export TELEGRAM_BOT_TOKEN="8789785619:AAH8a3XfwubIJJqjILD6FQg7NDRX9-ij5hs"
+    export TELEGRAM_BOT_TOKEN="..."
     export ANTHROPIC_API_KEY="..."
     export ADMIN_TELEGRAM_ID="123456789"   # Davronning Telegram user_id raqami
     python bot.py
@@ -53,7 +53,7 @@ from anthropic import Anthropic
 # SOZLAMALAR
 # ---------------------------------------------------------------------------
 
-TELEGRAM_BOT_TOKEN = os.environ.get("8789785619:AAH8a3XfwubIJJqjILD6FQg7NDRX9-ij5hs", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", "0"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "sensei.db")
