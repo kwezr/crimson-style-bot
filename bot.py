@@ -476,9 +476,34 @@ async def main():
 
     app = Application.builder().token(token).build()
 
-    # Handlerlarni shu yerga qo'shing
+        reg_conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
+            ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
+            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
+        },
+        fallbacks=[],
+    )
     app.add_handler(reg_conv)
-    # ... qolgan barcha add_handler qatorlaringiz ...
+        # Barcha qolgan handlerlar
+    app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("stat", cmd_stat))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("gifted", cmd_gifted))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CallbackQueryHandler(quiz_answer, pattern=r"^quiz:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    logger.info("Sensei AI ishga tushirilmoqda...")
+    
+    # Botni ishga tushirish
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    # Bot serverda o'chib qolmasligi uchun
+    await asyncio.Event().wait()
 
     logger.info("Sensei AI ishga tushirilmoqda...")
     
