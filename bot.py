@@ -15,7 +15,7 @@ O'RNATISH:
     pip install python-telegram-bot==21.* anthropic
 
 ISHGA TUSHIRISH:
-    export TELEGRAM_BOT_TOKEN="..."
+    export TELEGRAM_BOT_TOKEN="8789785619:AAH8a3XfwubIJJqjILD6FQg7NDRX9-ij5hs"
     export ANTHROPIC_API_KEY="..."
     export ADMIN_TELEGRAM_ID="123456789"   # Davronning Telegram user_id raqami
     python bot.py
