@@ -466,32 +466,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ---------------------------------------------------------------------------
 
-def main():
+async def main():
     init_db()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        logger.error("Token topilmadi!")
+        return
 
-    reg_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
-            ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
-            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
-        },
-        fallbacks=[],
-    )
+    app = Application.builder().token(token).build()
 
+    # Handlerlarni shu yerga qo'shing
     app.add_handler(reg_conv)
-    app.add_handler(CommandHandler("test", cmd_test))
-    app.add_handler(CommandHandler("stat", cmd_stat))
-    app.add_handler(CommandHandler("reset", cmd_reset))
-    app.add_handler(CommandHandler("gifted", cmd_gifted))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
-    app.add_handler(CallbackQueryHandler(quiz_answer, pattern=r"^quiz:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # ... qolgan barcha add_handler qatorlaringiz ...
 
-    logger.info("Sensei AI ishga tushdi.")
-    app.run_polling()
-
+    logger.info("Sensei AI ishga tushirilmoqda...")
+    
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
